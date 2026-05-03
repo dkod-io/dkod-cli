@@ -5,3 +5,4 @@
 //! no git writes); the caller composes redaction and storage.
 
 pub mod codex;
+pub(crate) mod worktree_diff;

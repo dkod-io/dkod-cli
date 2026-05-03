@@ -12,6 +12,7 @@
 //! See `docs/research/codex-transcript-format.md` for the upstream
 //! schema this adapter targets.
 
+use crate::capture::worktree_diff;
 use crate::{Agent, Message, Session};
 use anyhow::{anyhow, Context, Result};
 use std::io::{BufRead, BufReader};
@@ -262,6 +263,22 @@ pub fn capture_codex(opts: CaptureOptions) -> Result<Session> {
         .unwrap_or(0);
     let spawn_instant = Instant::now();
 
+    // Best-effort working-tree snapshot before the agent runs. We diff this
+    // against a post-exit snapshot to catch file changes the agent made
+    // through plain shell commands (e.g. `bash -c 'echo hi > x.txt'`, `mv`,
+    // `sed -i`) that the rollout adapter cannot see via apply_patch.
+    // A snapshot failure (non-repo cwd, permission error, etc.) is logged
+    // and we proceed without the fallback signal.
+    let before_snap = match worktree_diff::snapshot(&opts.cwd) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!(
+                "dkod: worktree-diff: pre-spawn snapshot failed ({e}); files_touched will rely on apply_patch only"
+            );
+            None
+        }
+    };
+
     let mut child = cmd.spawn().with_context(|| {
         format!(
             "spawn {} exec --json (is codex installed?)",
@@ -342,6 +359,27 @@ pub fn capture_codex(opts: CaptureOptions) -> Result<Session> {
     let mut session = parse_rollout(&rollout)?;
     session.created_at = spawn_unix;
     session.duration_ms = duration_ms;
+
+    // Union the apply_patch-derived files_touched with the worktree diff,
+    // dedupe, and sort. Best-effort: a post-spawn snapshot failure leaves
+    // session.files_touched untouched.
+    if let Some(before) = before_snap {
+        match worktree_diff::snapshot(&opts.cwd) {
+            Ok(after) => {
+                let diff_paths = worktree_diff::symmetric_diff(&before, &after);
+                let mut all: std::collections::BTreeSet<String> =
+                    session.files_touched.drain(..).collect();
+                all.extend(diff_paths);
+                session.files_touched = all.into_iter().collect();
+            }
+            Err(e) => {
+                eprintln!(
+                    "dkod: worktree-diff: post-spawn snapshot failed ({e}); files_touched relies on apply_patch only"
+                );
+            }
+        }
+    }
+
     Ok(session)
 }
 
@@ -604,5 +642,39 @@ mod tests {
         assert!(!version_below_floor("0.34.0", "0.34.0"));
         assert!(!version_below_floor("0.35.1", "0.34.0"));
         assert!(!version_below_floor("not-a-version", "0.34.0"));
+    }
+
+    /// Mirror the union-and-dedupe step that `capture_codex` performs after
+    /// rolling a worktree-diff snapshot in. We can't easily exercise the
+    /// full `capture_codex` path here because it spawns the real Codex
+    /// binary, but the union math itself is straightforward and worth
+    /// pinning so a future refactor can't silently re-introduce duplicates
+    /// or scramble the sort order.
+    #[test]
+    fn files_touched_union_dedupes_and_sorts() {
+        let mut session = Session {
+            id: Session::new_id(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: String::new(),
+            messages: Vec::new(),
+            commits: Vec::new(),
+            // From apply_patch (already in order, with one path that the
+            // worktree diff will also report).
+            files_touched: vec!["a.txt".into(), "b.rs".into()],
+        };
+        // Pretend the worktree diff also picked up `b.rs` (overlap) plus a
+        // brand-new path that apply_patch missed.
+        let diff_paths = vec!["b.rs".to_string(), "c.md".to_string()];
+
+        let mut all: std::collections::BTreeSet<String> = session.files_touched.drain(..).collect();
+        all.extend(diff_paths);
+        session.files_touched = all.into_iter().collect();
+
+        assert_eq!(
+            session.files_touched,
+            vec!["a.txt".to_string(), "b.rs".to_string(), "c.md".to_string()]
+        );
     }
 }
