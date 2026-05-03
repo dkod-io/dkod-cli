@@ -46,6 +46,40 @@ pub fn read_session(repo_path: &Path, id: &str) -> Result<Session> {
     Ok(session)
 }
 
+/// Write `refs/dkod/commits/<commit_sha>` pointing at the same blob the session ref points at.
+/// Idempotent — overwrites any existing link ref for the same commit (UUID v7 makes session
+/// id collisions implausible; commit shas are content-addressed, so overwrite-on-retry is safe).
+pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &str) -> Result<()> {
+    use gix::refs::{
+        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+        Target,
+    };
+
+    let repo = gix::open(repo_path).context("open repo")?;
+    let session_ref = repo
+        .find_reference(&refs::session_ref(session_id))
+        .context("find session ref")?;
+    let blob_id = session_ref.id().detach();
+
+    let ref_name = refs::commit_ref(commit_sha);
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: format!("dkod: link session {} to commit {}", session_id, commit_sha)
+                    .into(),
+            },
+            expected: PreviousValue::Any,
+            new: Target::Object(blob_id),
+        },
+        name: ref_name.try_into().context("invalid commit ref name")?,
+        deref: false,
+    })
+    .context("edit commit ref")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +123,46 @@ mod tests {
             .unwrap();
         // The ref points at a blob; the blob's id is a 40-char SHA-1 hex.
         assert_eq!(r.id().to_hex().to_string().len(), 40);
+    }
+
+    #[test]
+    fn link_session_to_commit_writes_ref_pointing_at_session_blob() {
+        use gix::ObjectId;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = gix::init(tmp.path()).unwrap();
+
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+
+        // Create a real commit so we have a real sha. Empty tree commit.
+        let empty_tree_id: ObjectId = repo.empty_tree().id().into();
+        let sig = gix::actor::SignatureRef {
+            name: "test".into(),
+            email: "t@example.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let commit_id = repo
+            .commit_as(
+                sig,
+                sig,
+                "HEAD",
+                "init",
+                empty_tree_id,
+                Vec::<ObjectId>::new(),
+            )
+            .unwrap()
+            .detach();
+
+        link_session_to_commit(tmp.path(), &s.id, &commit_id.to_string()).unwrap();
+
+        // The new commit-link ref must point at the SAME blob the session ref points at.
+        let session_ref = repo
+            .find_reference(&crate::refs::session_ref(&s.id))
+            .unwrap();
+        let commit_ref = repo
+            .find_reference(&crate::refs::commit_ref(&commit_id.to_string()))
+            .unwrap();
+        assert_eq!(session_ref.id(), commit_ref.id());
     }
 }
