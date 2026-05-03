@@ -80,6 +80,28 @@ pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &s
     Ok(())
 }
 
+/// Enumerate all sessions stored under `refs/dkod/sessions/*` in this repo.
+/// Returns the bare session ids (the part after the namespace prefix).
+pub fn list_sessions(repo_path: &Path) -> Result<Vec<String>> {
+    let repo = gix::open(repo_path).context("open repo")?;
+    let mut ids = Vec::new();
+    for r in repo
+        .references()
+        .context("list refs")?
+        .prefixed("refs/dkod/sessions/")
+        .context("filter session refs")?
+    {
+        let r = r
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("walk session ref")?;
+        let name = r.name().as_bstr().to_string();
+        if let Some(id) = refs::parse_session_ref(&name) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +186,28 @@ mod tests {
             .find_reference(&crate::refs::commit_ref(&commit_id.to_string()))
             .unwrap();
         assert_eq!(session_ref.id(), commit_ref.id());
+    }
+
+    #[test]
+    fn list_sessions_returns_all_written() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+
+        let mut ids: Vec<String> = (0..3)
+            .map(|_| {
+                let mut s = fixture_session();
+                s.id = Session::new_id();
+                // ensure ids are distinct even on fast machines (uuid::now_v7 has ms resolution)
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let id = s.id.clone();
+                write_session(tmp.path(), &s).unwrap();
+                id
+            })
+            .collect();
+        ids.sort();
+
+        let mut listed = list_sessions(tmp.path()).unwrap();
+        listed.sort();
+        assert_eq!(ids, listed);
     }
 }
