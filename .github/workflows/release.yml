@@ -116,7 +116,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          prerelease: true
+          prerelease: false
           fail_on_unmatched_files: true
           files: |
             release/*.tar.gz
