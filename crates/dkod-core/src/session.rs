@@ -12,6 +12,12 @@ pub struct Session {
     pub files_touched: Vec<String>,
 }
 
+impl Session {
+    pub fn new_id() -> String {
+        uuid::Uuid::now_v7().to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Agent {
@@ -89,5 +95,16 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["role"], "tool");
         assert_eq!(v["name"], "read_file");
+    }
+
+    #[test]
+    fn new_session_id_is_unique_and_time_ordered() {
+        let a = Session::new_id();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b = Session::new_id();
+        assert_ne!(a, b);
+        // UUID v7 is time-ordered as a string when sorted lexicographically
+        // for ids generated at least 1 ms apart.
+        assert!(a < b);
     }
 }
