@@ -38,7 +38,12 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Init => cmd::init::run(&std::env::current_dir()?),
-        Cmd::Capture { .. } => todo!("dkod capture: implemented in Task 15"),
+        Cmd::Capture { agent, args } => match agent.as_str() {
+            "codex" => cmd::capture::codex::run(&std::env::current_dir()?, args),
+            other => Err(anyhow::anyhow!(
+                "unknown agent: {other} (V1 supports: codex; claude-code lands in Task 19)"
+            )),
+        },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
     }

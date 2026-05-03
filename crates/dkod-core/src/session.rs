@@ -34,6 +34,9 @@ pub enum Message {
     Assistant {
         content: String,
     },
+    Reasoning {
+        content: String,
+    },
     Tool {
         name: String,
         input: serde_json::Value,
@@ -47,6 +50,9 @@ impl Message {
     }
     pub fn assistant(s: impl Into<String>) -> Self {
         Self::Assistant { content: s.into() }
+    }
+    pub fn reasoning(s: impl Into<String>) -> Self {
+        Self::Reasoning { content: s.into() }
     }
     pub fn tool(
         name: impl Into<String>,
@@ -95,6 +101,18 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["role"], "tool");
         assert_eq!(v["name"], "read_file");
+    }
+
+    #[test]
+    fn reasoning_helper_round_trips() {
+        let m = Message::reasoning("think step by step");
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+        // sanity-check the wire format
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["role"], "reasoning");
+        assert_eq!(v["content"], "think step by step");
     }
 
     #[test]

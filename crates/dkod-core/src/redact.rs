@@ -73,7 +73,9 @@ pub fn redact_session(s: &mut crate::Session, cfg: &RedactConfig) {
     s.prompt_summary = redact(&s.prompt_summary, cfg);
     for m in &mut s.messages {
         match m {
-            crate::Message::User { content } | crate::Message::Assistant { content } => {
+            crate::Message::User { content }
+            | crate::Message::Assistant { content }
+            | crate::Message::Reasoning { content } => {
                 *content = redact(content, cfg);
             }
             crate::Message::Tool { input, output, .. } => {
@@ -190,6 +192,32 @@ mod tests {
             assert!(output.contains("[REDACTED:env_assignment]"));
         } else {
             panic!("expected Tool message");
+        }
+    }
+
+    #[test]
+    fn redacts_reasoning_content() {
+        use crate::{Agent, Message, Session};
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "ok".into(),
+            messages: vec![Message::reasoning(
+                "the user pasted GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234",
+            )],
+            commits: vec![],
+            files_touched: vec![],
+        };
+        redact_session(&mut s, &crate::config::RedactConfig::default());
+        if let Message::Reasoning { content } = &s.messages[0] {
+            assert!(
+                content.contains("[REDACTED:env_assignment]"),
+                "reasoning not redacted: {content}"
+            );
+        } else {
+            panic!("expected Reasoning message");
         }
     }
 

@@ -26,6 +26,7 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
         match m {
             dkod_core::Message::User { content } => println!("> user\n{content}\n"),
             dkod_core::Message::Assistant { content } => println!("< assistant\n{content}\n"),
+            dkod_core::Message::Reasoning { content } => println!("r reasoning\n{content}\n"),
             dkod_core::Message::Tool {
                 name,
                 input,

@@ -192,6 +192,31 @@ fn show_unknown_id_errors() {
 }
 
 #[test]
+fn capture_unknown_agent_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .args(["capture", "claude-code", "--", "noop"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("unknown agent"));
+}
+
+#[test]
+fn capture_outside_a_repo_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .args(["capture", "codex", "--", "noop"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a git repo"));
+}
+
+#[test]
 fn init_rejects_invalid_custom_regex_in_existing_config() {
     let tmp = tempfile::TempDir::new().unwrap();
     init_git_repo(tmp.path());
