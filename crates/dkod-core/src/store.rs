@@ -2,6 +2,45 @@ use crate::{refs, Session};
 use anyhow::{Context, Result};
 use std::path::Path;
 
+/// Inject a synthetic fallback committer into the in-memory repo config when
+/// the host environment has no `user.name`/`user.email` configured (CI, fresh
+/// boxes, sandboxed runs). gix requires a committer identity to write reflog
+/// entries — without this guard, any `edit_reference` call against a
+/// reflog-tracked ref (`HEAD`, `refs/heads/*`, `refs/remotes/*`,
+/// `refs/notes/*`, `refs/worktree/*`) errors with `MissingCommitter`.
+///
+/// The dkod ref namespaces (`refs/dkod/sessions/*`, `refs/dkod/commits/*`)
+/// don't auto-create reflogs today, but we apply the guard defensively so
+/// these helpers stay correct if the namespace policy changes or if a caller
+/// flips `force_create_reflog: true`.
+pub(crate) fn ensure_committer(repo: &mut gix::Repository) -> Result<()> {
+    use gix::config::tree::gitoxide;
+
+    if repo.committer().is_some() {
+        return Ok(());
+    }
+
+    let mut config = gix::config::File::new(gix::config::file::Metadata::api());
+    config
+        .set_raw_value(&gitoxide::Committer::NAME_FALLBACK, "dkod")
+        .context("set committer name fallback")?;
+    config
+        .set_raw_value(&gitoxide::Committer::EMAIL_FALLBACK, "noreply@dkod.io")
+        .context("set committer email fallback")?;
+    // also patch author so any author-requiring code path works the same way
+    config
+        .set_raw_value(&gitoxide::Author::NAME_FALLBACK, "dkod")
+        .context("set author name fallback")?;
+    config
+        .set_raw_value(&gitoxide::Author::EMAIL_FALLBACK, "noreply@dkod.io")
+        .context("set author email fallback")?;
+
+    let mut snapshot = repo.config_snapshot_mut();
+    snapshot.append(config);
+    snapshot.commit().context("commit committer fallback")?;
+    Ok(())
+}
+
 /// Serialize `session` as JSON, write it as a Git blob, and create the
 /// `refs/dkod/sessions/<id>` reference pointing directly at that blob.
 pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
@@ -10,7 +49,8 @@ pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
         Target,
     };
 
-    let repo = gix::open(repo_path).context("open repo")?;
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    ensure_committer(&mut repo)?;
     let bytes = serde_json::to_vec(session).context("serialize session")?;
     let blob_id = repo.write_blob(&bytes).context("write blob")?.detach();
     let ref_name = refs::session_ref(&session.id);
@@ -55,7 +95,8 @@ pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &s
         Target,
     };
 
-    let repo = gix::open(repo_path).context("open repo")?;
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    ensure_committer(&mut repo)?;
     let session_ref = repo
         .find_reference(&refs::session_ref(session_id))
         .context("find session ref")?;
@@ -152,7 +193,12 @@ mod tests {
         use gix::ObjectId;
 
         let tmp = TempDir::new().unwrap();
-        let repo = gix::init(tmp.path()).unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        // CI runners have no global git config, so the test repo inherits no
+        // committer identity. `commit_as` writes a HEAD reflog and gix needs a
+        // committer to sign the entry — apply the same fallback the production
+        // code uses so this test runs in any environment.
+        super::ensure_committer(&mut repo).unwrap();
 
         let s = fixture_session();
         write_session(tmp.path(), &s).unwrap();
