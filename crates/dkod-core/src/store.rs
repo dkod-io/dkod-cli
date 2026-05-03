@@ -21,7 +21,7 @@ pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
             log: LogChange {
                 mode: RefLog::AndReference,
                 force_create_reflog: false,
-                message: "dkod: write session".into(),
+                message: format!("dkod: write session {}", session.id).into(),
             },
             expected: PreviousValue::Any,
             new: Target::Object(blob_id),
