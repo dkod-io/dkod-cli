@@ -26,8 +26,9 @@ pub fn redact(input: &str, cfg: &RedactConfig) -> String {
         };
     }
     for custom in &cfg.custom {
-        if let Ok(re) = Regex::new(custom) {
-            out = re.replace_all(&out, "[REDACTED:custom]").to_string();
+        match Regex::new(custom) {
+            Ok(re) => out = re.replace_all(&out, "[REDACTED:custom]").to_string(),
+            Err(e) => eprintln!("dkod: invalid custom redact pattern {custom:?}: {e}"),
         }
     }
     out
@@ -35,14 +36,14 @@ pub fn redact(input: &str, cfg: &RedactConfig) -> String {
 
 fn aws_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"AKIA[0-9A-Z]{16}").unwrap())
+    RE.get_or_init(|| Regex::new(r"\b(?:AKIA|ASIA|AROA|ABIA|ACCA)[0-9A-Z]{16}\b").unwrap())
 }
 
 fn github_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Matches classic PATs (ghp_, gho_, ghu_, ghs_) and fine-grained PATs (github_pat_).
     RE.get_or_init(|| {
-        Regex::new(r"(?:gh[pous]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{22,255})").unwrap()
+        Regex::new(r"\b(?:gh[pous]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b").unwrap()
     })
 }
 
@@ -54,8 +55,7 @@ fn openai_re() -> &'static Regex {
 
 fn stripe_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    // Test fixture has 18 chars after `sk_live_`. Spec authorizes narrowing to {16,} for the test.
-    RE.get_or_init(|| Regex::new(r"sk_(?:live|test)_[A-Za-z0-9]{16,}").unwrap())
+    RE.get_or_init(|| Regex::new(r"sk_(?:live|test)_[A-Za-z0-9]{24,}").unwrap())
 }
 
 fn env_re() -> &'static Regex {
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn redacts_stripe_key() {
-        assert!(r("sk_live_abcdefABCDEF0123456789").contains("[REDACTED:stripe]"));
+        assert!(r("sk_live_abcdefABCDEF0123456789ABCD").contains("[REDACTED:stripe]"));
     }
 
     #[test]
@@ -107,5 +107,13 @@ mod tests {
             "API_KEY=[REDACTED:env_assignment]"
         );
         assert!(r("export DB_PASS=hunter2").contains("[REDACTED:env_assignment]"));
+    }
+
+    #[test]
+    fn redaction_is_idempotent() {
+        let cfg = crate::config::RedactConfig::default();
+        let once = redact("AKIAIOSFODNN7EXAMPLE", &cfg);
+        let twice = redact(&once, &cfg);
+        assert_eq!(once, twice);
     }
 }
