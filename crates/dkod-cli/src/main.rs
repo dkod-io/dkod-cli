@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+mod cmd;
+
 #[derive(Parser)]
 #[command(
     name = "dkod",
@@ -35,7 +37,7 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Init => todo!("dkod init: implemented in Task 12"),
+        Cmd::Init => cmd::init::run(&std::env::current_dir()?),
         Cmd::Capture { .. } => todo!("dkod capture: implemented in Task 15"),
         Cmd::Log => todo!("dkod log: implemented in Task 13"),
         Cmd::Show { .. } => todo!("dkod show: implemented in Task 13"),
