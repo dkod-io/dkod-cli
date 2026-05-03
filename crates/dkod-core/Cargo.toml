@@ -13,7 +13,9 @@ regex.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 insta.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }

@@ -4,5 +4,6 @@
 //! shared `Session` / `Message` model. Adapters are pure (no redaction,
 //! no git writes); the caller composes redaction and storage.
 
+pub mod claude_code;
 pub mod codex;
 pub(crate) mod worktree_diff;
