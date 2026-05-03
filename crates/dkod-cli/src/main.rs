@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Init => cmd::init::run(&std::env::current_dir()?),
         Cmd::Capture { .. } => todo!("dkod capture: implemented in Task 15"),
-        Cmd::Log => todo!("dkod log: implemented in Task 13"),
-        Cmd::Show { .. } => todo!("dkod show: implemented in Task 13"),
+        Cmd::Log => cmd::log::run(&std::env::current_dir()?),
+        Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
     }
 }

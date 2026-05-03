@@ -19,6 +19,7 @@ toml.workspace = true
 regex.workspace = true
 
 [dev-dependencies]
+dkod-core = { path = "../dkod-core" }
 tempfile.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
