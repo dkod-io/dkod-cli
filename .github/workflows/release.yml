@@ -1,0 +1,123 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            apt_packages: gcc-aarch64-linux-gnu
+            cargo_linker: aarch64-linux-gnu-gcc
+    env:
+      VERSION: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross linker (Linux aarch64)
+        if: matrix.apt_packages != ''
+        env:
+          APT_PACKAGES: ${{ matrix.apt_packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $APT_PACKAGES
+
+      - name: Configure cross linker
+        if: matrix.cargo_linker != ''
+        env:
+          CARGO_LINKER: ${{ matrix.cargo_linker }}
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$CARGO_LINKER" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --target "$TARGET" -p dkod-cli
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET="dkod-${VERSION}-${TARGET}.tar.gz"
+          BIN_DIR="target/${TARGET}/release"
+          if [ ! -f "$BIN_DIR/dkod" ]; then
+            echo "expected binary not found at $BIN_DIR/dkod" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          tar -czf "dist/${ASSET}" -C "$BIN_DIR" dkod
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "${ASSET}" > "${ASSET}.sha256")
+          else
+            (cd dist && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
+          fi
+          ls -la dist
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dkod-${{ matrix.target }}
+          path: |
+            dist/${{ env.ASSET }}
+            dist/${{ env.ASSET }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          ls -la release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*.tar.gz
+            release/*.sha256
