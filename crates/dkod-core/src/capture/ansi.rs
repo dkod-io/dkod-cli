@@ -41,10 +41,8 @@ pub fn strip_ansi(s: &str) -> String {
 /// pasted colorized text into a tool's arguments.
 pub fn strip_ansi_in_json(value: &mut serde_json::Value) {
     match value {
-        serde_json::Value::String(s) => {
-            if s.contains('\x1b') {
-                *s = strip_ansi(s);
-            }
+        serde_json::Value::String(s) if s.contains('\x1b') => {
+            *s = strip_ansi(s);
         }
         serde_json::Value::Array(arr) => {
             for v in arr {
