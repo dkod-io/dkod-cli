@@ -16,6 +16,7 @@
 //! See `docs/research/claude-code-capture-protocol.md` for the upstream
 //! schema this adapter targets.
 
+use crate::capture::ansi::{strip_ansi, strip_ansi_in_json};
 use crate::capture::timestamp::parse_rfc3339_to_millis;
 use crate::{Agent, Message, Session};
 use anyhow::{Context, Result};
@@ -443,7 +444,7 @@ fn handle_user(
                         .get("tool_use_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let output_text = tool_result_to_string(block.get("content"));
+                    let output_text = strip_ansi(&tool_result_to_string(block.get("content")));
                     if let Some(&idx) = tool_to_msg.get(id) {
                         if let Some(Message::Tool { output, .. }) = session.messages.get_mut(idx) {
                             *output = output_text;
@@ -495,10 +496,13 @@ fn handle_assistant(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let input = block
+                let mut input = block
                     .get("input")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
+                // Tool inputs are JSON; if any string leaf has ANSI it was
+                // pasted in by the agent (rare). Scrub before storing.
+                strip_ansi_in_json(&mut input);
 
                 // Edit/Write/MultiEdit/NotebookEdit -> capture file path.
                 if let Some(path) = extract_edit_path(&name, &input) {
@@ -939,6 +943,47 @@ mod tests {
     }
 
     // ---- JSONL parser fixture test ----
+
+    #[test]
+    fn parse_strips_ansi_from_tool_output() {
+        // The synthetic fixture's Edit tool_result contains CSI sequences
+        // (\x1b[1;33m / \x1b[0m) and an OSC set-title sequence
+        // (\x1b]0;set-title\x07). After parse, the captured Tool::output
+        // must be the plain readable text only.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/claude-code/synthetic-transcript.jsonl");
+        let session = parse_transcript(&fixture).expect("parse transcript");
+        let edit_output = session
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::Tool { name, output, .. } if name == "Edit" => Some(output.clone()),
+                _ => None,
+            })
+            .expect("Edit tool message present");
+        assert!(
+            !edit_output.contains('\x1b'),
+            "tool output still contains ESC bytes: {edit_output:?}"
+        );
+        assert!(
+            !edit_output.contains('\x07'),
+            "tool output still contains BEL byte: {edit_output:?}"
+        );
+        assert_eq!(
+            edit_output, "applied edit  to src/lib.rs",
+            "tool output should be stripped of CSI + OSC and contain only readable text"
+        );
+    }
+
+    #[test]
+    fn ansi_helper_handles_csi_and_osc_and_is_idempotent() {
+        use crate::capture::ansi::strip_ansi;
+        let input = "\x1b[1;33mhello\x1b[0m \x1b]0;title\x07world";
+        let once = strip_ansi(input);
+        let twice = strip_ansi(&once);
+        assert_eq!(once, "hello world");
+        assert_eq!(once, twice);
+    }
 
     #[test]
     fn parse_populates_created_at_and_duration() {

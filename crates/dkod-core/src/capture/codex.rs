@@ -12,6 +12,7 @@
 //! See `docs/research/codex-transcript-format.md` for the upstream
 //! schema this adapter targets.
 
+use crate::capture::ansi::{strip_ansi, strip_ansi_in_json};
 use crate::capture::timestamp::parse_rfc3339_to_millis;
 use crate::capture::worktree_diff;
 use crate::{Agent, Message, Session};
@@ -189,8 +190,11 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
                             .get("arguments")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let args_json: serde_json::Value =
+                        let mut args_json: serde_json::Value =
                             serde_json::from_str(args_raw).unwrap_or(serde_json::Value::Null);
+                        // Strip ANSI from any string leaves (e.g. a colorized
+                        // command pasted into the shell args).
+                        strip_ansi_in_json(&mut args_json);
 
                         // Detect apply_patch and extract files touched from the patch body.
                         if let Some(cmd_arr) = args_json.get("command").and_then(|v| v.as_array()) {
@@ -217,11 +221,9 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
                             .get("call_id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let output = payload
-                            .get("output")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let output = strip_ansi(
+                            payload.get("output").and_then(|v| v.as_str()).unwrap_or(""),
+                        );
                         if let Some(&idx) = call_to_msg.get(call_id) {
                             if let Some(Message::Tool { output: o, .. }) =
                                 session.messages.get_mut(idx)
@@ -581,6 +583,32 @@ fn parse_three_part(s: &str) -> Option<(u32, u32, u32)> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_strips_ansi_from_tool_output() {
+        // The Codex fixture's function_call_output now contains CSI sequences
+        // (\x1b[1;32m / \x1b[0m). After parse, the Tool::output must contain
+        // no ESC bytes.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/codex/synthetic-rollout.jsonl");
+        let session = parse_rollout(&fixture).expect("parse rollout");
+        let tool_output = session
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                crate::Message::Tool { output, .. } => Some(output.clone()),
+                _ => None,
+            })
+            .expect("at least one Tool message");
+        assert!(
+            !tool_output.contains('\x1b'),
+            "tool output still contains ESC bytes: {tool_output:?}"
+        );
+        assert!(
+            tool_output.contains("Updated the following files"),
+            "stripped output should still contain readable content: {tool_output:?}"
+        );
+    }
 
     #[test]
     fn parse_populates_created_at_and_duration() {
