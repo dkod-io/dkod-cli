@@ -198,10 +198,110 @@ fn capture_unknown_agent_errors() {
     Command::cargo_bin("dkod")
         .unwrap()
         .current_dir(&tmp)
-        .args(["capture", "claude-code", "--", "noop"])
+        .args(["capture", "made-up-agent", "--", "noop"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("unknown agent"));
+}
+
+#[test]
+fn capture_claude_code_outside_repo_errors() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .args(["capture", "claude-code"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a git repo"));
+}
+
+#[test]
+fn capture_claude_code_refuses_when_global_hooks_disabled() {
+    // Build a fake $HOME with `.claude/settings.json` containing
+    // `disableAllHooks: true`, then run `dkod capture claude-code` against
+    // a fresh git repo. Expect failure with `disableAllHooks` in stderr.
+    let home = tempfile::TempDir::new().unwrap();
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{"disableAllHooks": true}"#,
+    )
+    .unwrap();
+
+    let repo = tempfile::TempDir::new().unwrap();
+    init_git_repo(repo.path());
+
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&repo)
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME") // force dirs to use HOME
+        .args(["capture", "claude-code"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("disableAllHooks"));
+}
+
+#[test]
+fn capture_hook_unknown_event_exits_zero() {
+    // Hidden subcommand. Even an unknown event must exit 0 — never break
+    // Claude Code.
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .args(["capture-hook", "deadbeefcafe", "NotARealEvent"])
+        .write_stdin("")
+        .assert()
+        .success();
+}
+
+#[test]
+fn capture_hook_with_no_socket_exits_zero() {
+    // A valid hook event name, but the socket doesn't exist for the
+    // supplied repo_hash. Must still exit 0.
+    let payload = serde_json::json!({
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "transcript_path": "/tmp/never.jsonl",
+        "cwd": "/tmp",
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+    })
+    .to_string();
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .args(["capture-hook", "deadbeefcafe", "SessionStart"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+}
+
+#[test]
+fn capture_hook_with_malformed_repo_hash_exits_zero() {
+    // Defence-in-depth: a tampered settings.local.json could pass us a
+    // path-like repo_hash. We must silently exit 0 — never touch the
+    // filesystem and never break Claude Code.
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .args(["capture-hook", "../../etc/passwd", "SessionStart"])
+        .write_stdin("{}")
+        .assert()
+        .success();
+}
+
+#[test]
+fn capture_hook_is_hidden_in_help() {
+    // The internal capture-hook subcommand must NOT appear in --help.
+    let out = Command::cargo_bin("dkod")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("capture-hook"),
+        "capture-hook should be hidden, got: {stdout}"
+    );
 }
 
 #[test]
