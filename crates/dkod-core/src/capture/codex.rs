@@ -12,6 +12,7 @@
 //! See `docs/research/codex-transcript-format.md` for the upstream
 //! schema this adapter targets.
 
+use crate::capture::timestamp::parse_rfc3339_to_millis;
 use crate::capture::worktree_diff;
 use crate::{Agent, Message, Session};
 use anyhow::{anyhow, Context, Result};
@@ -64,6 +65,11 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
     // event that mirrors a previous `response_item.message` (role=assistant).
     let mut last_assistant: Option<String> = None;
     let mut first_user_for_summary: Option<String> = None;
+    // Timestamps of message-producing lines (millis since unix epoch). Only
+    // recorded when a line actually emits at least one Message — session_meta
+    // and turn_context lines are skipped even though they carry a timestamp.
+    let mut first_msg_millis: Option<i64> = None;
+    let mut last_msg_millis: Option<i64> = None;
 
     for (lineno, line) in reader.lines().enumerate() {
         let line = match line {
@@ -93,6 +99,7 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
+        let before_len = session.messages.len();
         match record_type {
             "session_meta" => {
                 if let Some(ver) = payload.get("cli_version").and_then(|v| v.as_str()) {
@@ -232,10 +239,37 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
                 eprintln!("dkod: rollout: ignoring record type {:?}", other);
             }
         }
+        // Only count this line's timestamp if it actually produced a Message.
+        if session.messages.len() > before_len {
+            if let Some(ts) = record.get("timestamp").and_then(|v| v.as_str()) {
+                match parse_rfc3339_to_millis(ts) {
+                    Some(m) => {
+                        if first_msg_millis.is_none() {
+                            first_msg_millis = Some(m);
+                        }
+                        last_msg_millis = Some(m);
+                    }
+                    None => {
+                        eprintln!(
+                            "dkod: rollout: malformed timestamp {:?} at line {}; skipping for created_at/duration",
+                            ts,
+                            lineno + 1
+                        );
+                    }
+                }
+            }
+        }
     }
 
     if let Some(first) = first_user_for_summary {
         session.prompt_summary = summarize_prompt(&first);
+    }
+    if let Some(first_ms) = first_msg_millis {
+        session.created_at = first_ms.div_euclid(1000);
+        if let Some(last_ms) = last_msg_millis {
+            let delta = last_ms.saturating_sub(first_ms);
+            session.duration_ms = u64::try_from(delta).unwrap_or(0);
+        }
     }
 
     Ok(session)
@@ -547,6 +581,35 @@ fn parse_three_part(s: &str) -> Option<(u32, u32, u32)> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_populates_created_at_and_duration() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/codex/synthetic-rollout.jsonl");
+        let session = parse_rollout(&fixture).expect("parse rollout");
+
+        // First message-producing record is the event_msg user_message at
+        // 2026-05-03T12:00:02.000Z (epoch 1777809602). session_meta and
+        // turn_context lines must be skipped.
+        assert_ne!(session.created_at, 0, "created_at not populated");
+        assert_eq!(
+            session.created_at, 1777809602,
+            "created_at should be epoch seconds of first message-producing line"
+        );
+        // The last assistant `response_item.message` is at 12:00:07.000Z.
+        // The trailing `event_msg.agent_message` at 12:00:08.000Z duplicates
+        // it and is deduped, so it does NOT advance last_msg_millis.
+        // First message at 12:00:02 -> 5000ms.
+        assert!(
+            session.duration_ms > 0,
+            "duration_ms not populated: {}",
+            session.duration_ms
+        );
+        assert_eq!(
+            session.duration_ms, 5000,
+            "duration_ms should be last - first in millis (deduped agent_message must not advance last)"
+        );
+    }
 
     #[test]
     fn parse_rollout_synthetic_fixture() {

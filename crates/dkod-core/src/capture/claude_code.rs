@@ -16,6 +16,7 @@
 //! See `docs/research/claude-code-capture-protocol.md` for the upstream
 //! schema this adapter targets.
 
+use crate::capture::timestamp::parse_rfc3339_to_millis;
 use crate::{Agent, Message, Session};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -312,6 +313,12 @@ pub fn parse_transcript(path: &Path) -> Result<Session> {
         std::collections::HashMap::new();
     let mut files_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut first_user_for_summary: Option<String> = None;
+    // Timestamps of message-producing lines (millis since unix epoch). We
+    // only record a line's timestamp if it actually emitted at least one
+    // Message — system/local_command/attachment/file-history-snapshot lines
+    // are skipped, even if they carry a `timestamp` field.
+    let mut first_msg_millis: Option<i64> = None;
+    let mut last_msg_millis: Option<i64> = None;
 
     for (lineno, line) in reader.lines().enumerate() {
         let line = match line {
@@ -340,6 +347,7 @@ pub fn parse_transcript(path: &Path) -> Result<Session> {
             }
         };
         let record_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let before_len = session.messages.len();
         match record_type {
             "user" => {
                 handle_user(
@@ -356,10 +364,40 @@ pub fn parse_transcript(path: &Path) -> Result<Session> {
             // custom-title, agent-name, permission-mode, last-prompt, pr-link, etc.).
             _ => {}
         }
+        // Only count this line's timestamp if it produced at least one Message.
+        if session.messages.len() > before_len {
+            if let Some(ts) = record.get("timestamp").and_then(|v| v.as_str()) {
+                match parse_rfc3339_to_millis(ts) {
+                    Some(m) => {
+                        if first_msg_millis.is_none() {
+                            first_msg_millis = Some(m);
+                        }
+                        last_msg_millis = Some(m);
+                    }
+                    None => {
+                        eprintln!(
+                            "dkod: claude-code: malformed timestamp {:?} at line {}; skipping for created_at/duration",
+                            ts,
+                            lineno + 1
+                        );
+                    }
+                }
+            }
+        }
     }
 
     if let Some(first) = first_user_for_summary {
         session.prompt_summary = summarize_prompt(&first);
+    }
+    if let Some(first_ms) = first_msg_millis {
+        // Convert millis -> seconds, flooring (matches the spec's
+        // "unix seconds of the first message" wording).
+        session.created_at = first_ms.div_euclid(1000);
+        if let Some(last_ms) = last_msg_millis {
+            // Negative deltas (clock skew) collapse to 0 per issue #1 spec.
+            let delta = last_ms.saturating_sub(first_ms);
+            session.duration_ms = u64::try_from(delta).unwrap_or(0);
+        }
     }
 
     Ok(session)
@@ -901,6 +939,34 @@ mod tests {
     }
 
     // ---- JSONL parser fixture test ----
+
+    #[test]
+    fn parse_populates_created_at_and_duration() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/claude-code/synthetic-transcript.jsonl");
+        let session = parse_transcript(&fixture).expect("parse transcript");
+
+        // First message-producing line in the synthetic fixture is the
+        // user message at 2026-05-03T12:00:01.000Z (epoch 1777809601).
+        // The system/local_command line at 12:00:00 must be skipped.
+        assert_ne!(session.created_at, 0, "created_at not populated");
+        assert_eq!(
+            session.created_at, 1777809601,
+            "created_at should be epoch seconds of first message-producing line"
+        );
+        // Last message-producing line is at 2026-05-03T12:00:07.000Z, so
+        // duration should be ~6000ms (6s wall-clock between first and last
+        // emitted message).
+        assert!(
+            session.duration_ms > 0,
+            "duration_ms not populated: {}",
+            session.duration_ms
+        );
+        assert_eq!(
+            session.duration_ms, 6000,
+            "duration_ms should be last - first in millis"
+        );
+    }
 
     #[test]
     fn parse_synthetic_transcript() {

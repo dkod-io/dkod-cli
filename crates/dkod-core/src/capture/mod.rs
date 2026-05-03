@@ -6,4 +6,5 @@
 
 pub mod claude_code;
 pub mod codex;
+pub(crate) mod timestamp;
 pub(crate) mod worktree_diff;
