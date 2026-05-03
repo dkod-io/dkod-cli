@@ -2,6 +2,7 @@
 {"timestamp":"2026-05-03T12:00:01.000Z","type":"turn_context","payload":{"cwd":"/tmp/demo","model":"gpt-5","effort":"medium","approval_policy":"on-failure","sandbox_policy":"workspace-write"}}
 {"timestamp":"2026-05-03T12:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"please add a hello.txt file with the content 'hi from codex'"}}
 {"timestamp":"2026-05-03T12:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"please add a hello.txt file with the content 'hi from codex'"}]}}
+{"timestamp":"2026-05-03T12:00:03.500Z","type":"response_item","payload":{"type":"reasoning","text":"   "}}
 {"timestamp":"2026-05-03T12:00:04.000Z","type":"response_item","payload":{"type":"reasoning","text":"the user wants a tiny file written; use apply_patch with Add File"}}
 {"timestamp":"2026-05-03T12:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"apply_patch\",\"*** Begin Patch\\n*** Add File: hello.txt\\n+hi from codex\\n*** End Patch\"]}","call_id":"call_demo_1"}}
 {"timestamp": "2026-05-03T12:00:06.000Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "call_demo_1", "output": "\u001b[1;32m{\"output\":\"Success. \u001b[0mUpdated the following files:\\nA hello.txt\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.01}}"}}

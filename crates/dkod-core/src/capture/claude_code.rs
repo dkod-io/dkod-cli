@@ -482,7 +482,12 @@ fn handle_assistant(
             }
             "thinking" => {
                 if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
-                    session.messages.push(Message::reasoning(t));
+                    // Skip whitespace-only reasoning blocks (issue #3): empty
+                    // thinking conveys nothing and renders as a blank line in
+                    // dkod show.
+                    if !t.trim().is_empty() {
+                        session.messages.push(Message::reasoning(t));
+                    }
                 }
             }
             "tool_use" => {
@@ -943,6 +948,34 @@ mod tests {
     }
 
     // ---- JSONL parser fixture test ----
+
+    #[test]
+    fn parse_skips_empty_reasoning_blocks() {
+        // The synthetic fixture has two `thinking` content blocks in the
+        // first assistant turn: one whitespace-only and one with real
+        // reasoning. After parse, only the non-empty one should be kept.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/claude-code/synthetic-transcript.jsonl");
+        let session = parse_transcript(&fixture).expect("parse transcript");
+        let reasoning: Vec<&str> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Reasoning { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasoning.len(),
+            1,
+            "expected exactly one Reasoning message, got {reasoning:?}"
+        );
+        assert!(
+            reasoning[0].contains("the user wants a doc comment"),
+            "kept reasoning should be the non-empty one, got {:?}",
+            reasoning[0]
+        );
+    }
 
     #[test]
     fn parse_strips_ansi_from_tool_output() {

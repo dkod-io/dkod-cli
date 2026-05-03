@@ -175,7 +175,10 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
                     }
                     "reasoning" => {
                         let text = extract_reasoning_text(&payload);
-                        if !text.is_empty() {
+                        // Skip whitespace-only reasoning blocks (issue #3):
+                        // empty reasoning conveys nothing and renders as a
+                        // blank line in dkod show.
+                        if !text.trim().is_empty() {
                             session.messages.push(Message::reasoning(text));
                         }
                     }
@@ -583,6 +586,34 @@ fn parse_three_part(s: &str) -> Option<(u32, u32, u32)> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_skips_empty_reasoning_blocks() {
+        // The synthetic fixture has two response_item.reasoning lines:
+        // one with whitespace-only text and one with real reasoning. After
+        // parse, only the non-empty one should appear.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/codex/synthetic-rollout.jsonl");
+        let session = parse_rollout(&fixture).expect("parse rollout");
+        let reasoning: Vec<&str> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                crate::Message::Reasoning { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasoning.len(),
+            1,
+            "expected exactly one Reasoning message, got {reasoning:?}"
+        );
+        assert!(
+            reasoning[0].contains("the user wants a tiny file"),
+            "kept reasoning should be the non-empty one, got {:?}",
+            reasoning[0]
+        );
+    }
 
     #[test]
     fn parse_strips_ansi_from_tool_output() {
