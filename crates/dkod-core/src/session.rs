@@ -42,6 +42,17 @@ impl Message {
     pub fn assistant(s: impl Into<String>) -> Self {
         Self::Assistant { content: s.into() }
     }
+    pub fn tool(
+        name: impl Into<String>,
+        input: serde_json::Value,
+        output: impl Into<String>,
+    ) -> Self {
+        Self::Tool {
+            name: name.into(),
+            input,
+            output: output.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +77,17 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn tool_helper_round_trips() {
+        let m = Message::tool("read_file", serde_json::json!({"path": "src/lib.rs"}), "ok");
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+        // sanity-check the tag-based wire format
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["role"], "tool");
+        assert_eq!(v["name"], "read_file");
     }
 }
