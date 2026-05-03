@@ -26,3 +26,9 @@ insta = { version = "1", features = ["yaml"] }
 dirs = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "signal"] }
 sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+panic = "abort"
