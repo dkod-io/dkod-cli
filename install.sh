@@ -143,8 +143,8 @@ if [ "$SUMS_DOWNLOADED" = "1" ]; then
     if [ -z "$SHA_TOOL" ]; then
         log "warning: neither sha256sum nor shasum found; skipping checksum verification"
     else
-        expected=$(awk '{print $1}' < "$TMPDIR_INSTALL/$SUMS")
-        actual=$(cd "$TMPDIR_INSTALL" && $SHA_TOOL "$ASSET" | awk '{print $1}')
+        expected=$(sed -E 's/^([0-9a-fA-F]+).*/\1/' < "$TMPDIR_INSTALL/$SUMS")
+        actual=$(cd "$TMPDIR_INSTALL" && $SHA_TOOL "$ASSET" | sed -E 's/^([0-9a-fA-F]+).*/\1/')
         if [ "$expected" != "$actual" ]; then
             err "checksum mismatch for $ASSET (expected $expected, got $actual)"
         fi
