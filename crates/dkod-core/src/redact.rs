@@ -63,6 +63,45 @@ fn env_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?P<lhs>\b[A-Z][A-Z0-9_]*=)(?P<rhs>\S+)").unwrap())
 }
 
+/// Apply redaction to every text-bearing field of a `Session` in place.
+/// Walks `prompt_summary` and each `Message` variant.
+/// Tool inputs are JSON values; we redact every JSON string we encounter recursively.
+pub fn redact_session(s: &mut crate::Session, cfg: &RedactConfig) {
+    if !cfg.enabled {
+        return;
+    }
+    s.prompt_summary = redact(&s.prompt_summary, cfg);
+    for m in &mut s.messages {
+        match m {
+            crate::Message::User { content } | crate::Message::Assistant { content } => {
+                *content = redact(content, cfg);
+            }
+            crate::Message::Tool { input, output, .. } => {
+                redact_json(input, cfg);
+                *output = redact(output, cfg);
+            }
+        }
+    }
+}
+
+fn redact_json(value: &mut serde_json::Value, cfg: &RedactConfig) {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => *s = redact(s, cfg),
+        Value::Array(arr) => {
+            for v in arr {
+                redact_json(v, cfg);
+            }
+        }
+        Value::Object(map) => {
+            for (_k, v) in map.iter_mut() {
+                redact_json(v, cfg);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +154,68 @@ mod tests {
         let once = redact("AKIAIOSFODNN7EXAMPLE", &cfg);
         let twice = redact(&once, &cfg);
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn redacts_session_messages() {
+        use crate::{Agent, Message, Session};
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "AKIAIOSFODNN7EXAMPLE".into(),
+            messages: vec![
+                Message::user("API_KEY=supersecret"),
+                Message::assistant("see file"),
+                Message::tool(
+                    "read_file",
+                    serde_json::json!({"path": "src/lib.rs"}),
+                    "GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234",
+                ),
+            ],
+            commits: vec![],
+            files_touched: vec![],
+        };
+        redact_session(&mut s, &crate::config::RedactConfig::default());
+        assert_eq!(s.prompt_summary, "[REDACTED:aws]");
+
+        if let Message::User { content } = &s.messages[0] {
+            assert!(content.contains("[REDACTED:env_assignment]"));
+        } else {
+            panic!("expected User message");
+        }
+
+        if let Message::Tool { output, .. } = &s.messages[2] {
+            assert!(output.contains("[REDACTED:env_assignment]"));
+        } else {
+            panic!("expected Tool message");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn redact_session_is_a_no_op_when_disabled() {
+        use crate::{Agent, Message, Session};
+        let mut cfg = crate::config::RedactConfig::default();
+        cfg.enabled = false;
+
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "AKIAIOSFODNN7EXAMPLE".into(),
+            messages: vec![Message::user("API_KEY=supersecret")],
+            commits: vec![],
+            files_touched: vec![],
+        };
+        redact_session(&mut s, &cfg);
+        assert_eq!(s.prompt_summary, "AKIAIOSFODNN7EXAMPLE");
+        if let Message::User { content } = &s.messages[0] {
+            assert_eq!(content, "API_KEY=supersecret");
+        } else {
+            panic!("expected User message");
+        }
     }
 }
