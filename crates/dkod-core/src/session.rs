@@ -1,0 +1,70 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub agent: Agent,
+    pub created_at: i64,
+    pub duration_ms: u64,
+    pub prompt_summary: String,
+    pub messages: Vec<Message>,
+    pub commits: Vec<String>,
+    pub files_touched: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Agent {
+    ClaudeCode,
+    Codex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
+pub enum Message {
+    User {
+        content: String,
+    },
+    Assistant {
+        content: String,
+    },
+    Tool {
+        name: String,
+        input: serde_json::Value,
+        output: String,
+    },
+}
+
+impl Message {
+    pub fn user(s: impl Into<String>) -> Self {
+        Self::User { content: s.into() }
+    }
+    pub fn assistant(s: impl Into<String>) -> Self {
+        Self::Assistant { content: s.into() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_json() {
+        let s = Session {
+            id: "0192f8e2-7b3a-7000-8a3e-000000000001".into(),
+            agent: Agent::ClaudeCode,
+            created_at: 1735689600,
+            duration_ms: 12_345,
+            prompt_summary: "fix the auth bug".into(),
+            messages: vec![
+                Message::user("fix the auth bug"),
+                Message::assistant("done"),
+            ],
+            commits: vec!["deadbeef".into()],
+            files_touched: vec!["src/auth.rs".into()],
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+}
