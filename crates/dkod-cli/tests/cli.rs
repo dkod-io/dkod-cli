@@ -97,6 +97,116 @@ fn init_outside_a_repo_errors() {
         .stderr(predicates::str::contains("not a git repo"));
 }
 
+/// Helper: count occurrences of the dkod fetch refspec in the named
+/// remote's `fetch` config entries via `git config --get-all`.
+fn count_dkod_refspecs(repo: &std::path::Path, remote: &str) -> usize {
+    let key = format!("remote.{remote}.fetch");
+    let out = StdCommand::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["config", "--get-all", &key])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.trim() == "+refs/dkod/*:refs/dkod/*")
+        .count()
+}
+
+/// Helper: add a remote with an arbitrary URL. Tests don't need the
+/// remote to be reachable — `git config` writes are local.
+fn add_remote(repo: &std::path::Path, name: &str, url: &str) {
+    let status = StdCommand::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["remote", "add", name, url])
+        .status()
+        .unwrap();
+    assert!(status.success(), "git remote add {name} failed");
+}
+
+#[test]
+fn init_writes_dkod_refspec_when_remote_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    add_remote(tmp.path(), "origin", "https://example.invalid/dkod.git");
+
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .arg("init")
+        .assert()
+        .success();
+
+    assert_eq!(
+        count_dkod_refspecs(tmp.path(), "origin"),
+        1,
+        "expected exactly one +refs/dkod/*:refs/dkod/* line on origin"
+    );
+}
+
+#[test]
+fn init_skips_refspec_when_no_remote() {
+    // No `git remote add` here — the repo is fresh from `git init`.
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+
+    // Should still succeed. No refspec to write because there's no
+    // remote to write it on; the user is expected to re-run init
+    // after `git remote add`.
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .arg("init")
+        .assert()
+        .success();
+
+    // `git config --get-all remote.origin.fetch` returns exit 1
+    // ("key not set") and zero matching lines — confirms no remote
+    // was silently fabricated.
+    assert_eq!(count_dkod_refspecs(tmp.path(), "origin"), 0);
+}
+
+#[test]
+fn init_refspec_is_idempotent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    add_remote(tmp.path(), "origin", "https://example.invalid/dkod.git");
+
+    for _ in 0..3 {
+        Command::cargo_bin("dkod")
+            .unwrap()
+            .current_dir(&tmp)
+            .arg("init")
+            .assert()
+            .success();
+    }
+
+    assert_eq!(
+        count_dkod_refspecs(tmp.path(), "origin"),
+        1,
+        "running dkod init three times produced duplicate refspecs"
+    );
+}
+
+#[test]
+fn init_writes_refspec_to_all_remotes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    add_remote(tmp.path(), "origin", "https://example.invalid/origin.git");
+    add_remote(tmp.path(), "upstream", "https://example.invalid/upstream.git");
+
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .arg("init")
+        .assert()
+        .success();
+
+    assert_eq!(count_dkod_refspecs(tmp.path(), "origin"), 1);
+    assert_eq!(count_dkod_refspecs(tmp.path(), "upstream"), 1);
+}
+
 fn write_fixture_session(
     repo: &std::path::Path,
     id_override: Option<String>,
