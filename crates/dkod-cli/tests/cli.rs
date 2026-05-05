@@ -225,6 +225,125 @@ fn init_writes_refspec_to_all_remotes() {
     assert_eq!(count_dkod_refspecs(tmp.path(), "upstream"), 1);
 }
 
+/// Helper: count Claude Code hook entries dkod has installed across
+/// every event in `.claude/settings.local.json`. Looks for the
+/// `_dkod: true` sentinel that the install path tags entries with so
+/// dkod can recognise its own and not clobber the user's other hooks.
+fn count_dkod_hook_entries(repo: &std::path::Path) -> usize {
+    let path = repo.join(".claude/settings.local.json");
+    if !path.exists() {
+        return 0;
+    }
+    let body = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let Some(hooks) = v.get("hooks").and_then(|h| h.as_object()) else {
+        return 0;
+    };
+    hooks
+        .values()
+        .filter_map(|arr| arr.as_array())
+        .flat_map(|arr| arr.iter())
+        .filter(|entry| {
+            entry
+                .get("_dkod")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+#[test]
+fn init_installs_claude_code_hooks() {
+    // Use a fresh HOME so the test never picks up the developer's
+    // real `~/.claude/settings.json` (which might have `disableAllHooks`
+    // for testing of a different feature). Same isolation pattern as
+    // `capture_claude_code_refuses_when_global_hooks_disabled`.
+    let home = tempfile::TempDir::new().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+
+    // The install path writes one entry per HOOK_EVENT — exact count
+    // is implementation-defined and may grow, so we just assert "more
+    // than zero entries with the dkod sentinel are present".
+    let entries = count_dkod_hook_entries(tmp.path());
+    assert!(
+        entries > 0,
+        "expected at least one dkod-marked hook entry, found {entries}"
+    );
+}
+
+#[test]
+fn init_hook_install_is_idempotent() {
+    let home = tempfile::TempDir::new().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+
+    let mut counts = Vec::new();
+    for _ in 0..3 {
+        Command::cargo_bin("dkod")
+            .unwrap()
+            .current_dir(&tmp)
+            .env("HOME", home.path())
+            .env_remove("XDG_DATA_HOME")
+            .arg("init")
+            .assert()
+            .success();
+        counts.push(count_dkod_hook_entries(tmp.path()));
+    }
+
+    // Three runs should leave exactly the same number of dkod-marked
+    // entries — install_hooks deletes prior `_dkod: true` entries
+    // before re-adding the current set.
+    assert!(
+        counts.iter().all(|&c| c == counts[0]) && counts[0] > 0,
+        "expected stable nonzero count across runs, got {counts:?}"
+    );
+}
+
+#[test]
+fn init_skips_hook_install_when_disabled_globally() {
+    // Mirror the fake-HOME pattern from
+    // `capture_claude_code_refuses_when_global_hooks_disabled`, but
+    // we expect SUCCESS (not failure) — `dkod init` respects the
+    // global opt-out and emits a notice on stderr instead of failing.
+    let home = tempfile::TempDir::new().unwrap();
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{"disableAllHooks": true}"#,
+    )
+    .unwrap();
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("disableAllHooks"));
+
+    assert_eq!(
+        count_dkod_hook_entries(tmp.path()),
+        0,
+        "no dkod hook entries should have been written when globally disabled"
+    );
+}
+
 fn write_fixture_session(
     repo: &std::path::Path,
     id_override: Option<String>,

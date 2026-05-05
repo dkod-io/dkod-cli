@@ -34,6 +34,28 @@ pub fn run(cwd: &Path) -> Result<()> {
     //    duplicating it on remotes that already have it.
     ensure_dkod_refspec(cwd)?;
 
+    // 4. Install Claude Code hooks at init time so the user gets
+    //    capture wired up just by running `dkod init` (issue #6 phase
+    //    1). The current V1 path still requires a separate
+    //    `dkod capture claude-code` to start the long-lived server;
+    //    phase 2 will lazy-spawn it from the hook so this becomes the
+    //    only setup step. Either way, having the hook ENTRIES in
+    //    place at init time is the prerequisite for both modes.
+    match super::capture::claude_code::install_hooks_at_init(cwd)? {
+        super::capture::claude_code::InitInstallOutcome::Installed => {
+            // Stay quiet on the happy path — `dkod init` already
+            // implies "set everything up" and a flood of "did X, did
+            // Y" lines clutters the user's terminal.
+        }
+        super::capture::claude_code::InitInstallOutcome::SkippedDisabledGlobally => {
+            eprintln!(
+                "dkod init: skipping Claude Code hook install — \
+                 ~/.claude/settings.json has disableAllHooks=true. \
+                 Remove that flag (or scope it) to enable capture."
+            );
+        }
+    }
+
     Ok(())
 }
 

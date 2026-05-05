@@ -180,6 +180,49 @@ fn install_hooks(repo_root: &Path, repo_hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Outcome of an init-time hook install. Surfaced so `dkod init` can
+/// print a different message depending on whether anything was
+/// actually written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitInstallOutcome {
+    /// Hooks were written (or refreshed) into `.claude/settings.local.json`.
+    Installed,
+    /// `~/.claude/settings.json` has `disableAllHooks: true`, so we
+    /// respected the global opt-out and did not write the per-repo file.
+    SkippedDisabledGlobally,
+}
+
+/// Install dkod's Claude Code hooks at `dkod init` time, so a user
+/// who runs `dkod init` and then starts a `claude` session in this
+/// repo gets capture for free — without first having to launch
+/// `dkod capture claude-code`.
+///
+/// This is phase 1 of dkod-cli#6 (always-on capture). The current
+/// V1 path still requires the user to run `dkod capture claude-code`
+/// in a second terminal so the long-lived server is up to receive
+/// hook events. Phase 2 will add lazy-spawn so this becomes truly
+/// hook-only — the `dkod capture-hook` command in the installed
+/// entries (see [`dkod_hook_entry_for_event`]) is the future
+/// extension point. Until then, the hook entries are still written
+/// here so the wiring is in place; the only thing missing is the
+/// auto-spawn.
+///
+/// Idempotent: re-running `dkod init` re-writes the dkod-marked
+/// entries (recognised via the `_dkod: true` sentinel) without
+/// touching any other content in `.claude/settings.local.json`.
+pub fn install_hooks_at_init(cwd: &Path) -> Result<InitInstallOutcome> {
+    if global_hooks_disabled()? {
+        return Ok(InitInstallOutcome::SkippedDisabledGlobally);
+    }
+    // Canonicalise so different cwds inside the same repo produce the
+    // same hash — matches the server-startup path's logic.
+    let repo_root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let repo_hash = compute_repo_hash(&repo_root);
+    install_hooks(&repo_root, &repo_hash)
+        .with_context(|| "install dkod hooks into .claude/settings.local.json")?;
+    Ok(InitInstallOutcome::Installed)
+}
+
 /// Remove only the dkod-installed hook entries from
 /// `.claude/settings.local.json`. Preserves everything else. If the file
 /// doesn't exist or has no dkod entries, no-op.
