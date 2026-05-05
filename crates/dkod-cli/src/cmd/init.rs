@@ -9,8 +9,12 @@ use std::process::Command;
 const DKOD_FETCH_REFSPEC: &str = "+refs/dkod/*:refs/dkod/*";
 
 pub fn run(cwd: &Path) -> Result<()> {
-    // 1. Ensure we're inside a git repo.
-    gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    // 1. Ensure we're inside (or under) a git repo. `gix::discover`
+    //    walks up from `cwd` so `dkod init` works whether the user
+    //    is at the repo root or in any subdirectory — matching how
+    //    `git` itself behaves and what `resolve_repo_root` does
+    //    further down the call stack.
+    gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
 
     // 2. If a config already exists, validate it (via load_config); otherwise
     //    write a default and validate that.
@@ -33,6 +37,28 @@ pub fn run(cwd: &Path) -> Result<()> {
     //    adding a new remote applies the refspec there too without
     //    duplicating it on remotes that already have it.
     ensure_dkod_refspec(cwd)?;
+
+    // 4. Install Claude Code hooks at init time so the user gets
+    //    capture wired up just by running `dkod init` (issue #6 phase
+    //    1). The current V1 path still requires a separate
+    //    `dkod capture claude-code` to start the long-lived server;
+    //    phase 2 will lazy-spawn it from the hook so this becomes the
+    //    only setup step. Either way, having the hook ENTRIES in
+    //    place at init time is the prerequisite for both modes.
+    match super::capture::claude_code::install_hooks_at_init(cwd)? {
+        super::capture::claude_code::InitInstallOutcome::Installed => {
+            // Stay quiet on the happy path — `dkod init` already
+            // implies "set everything up" and a flood of "did X, did
+            // Y" lines clutters the user's terminal.
+        }
+        super::capture::claude_code::InitInstallOutcome::SkippedDisabledGlobally => {
+            eprintln!(
+                "dkod init: skipping Claude Code hook install — \
+                 ~/.claude/settings.json has disableAllHooks=true. \
+                 Remove that flag (or scope it) to enable capture."
+            );
+        }
+    }
 
     Ok(())
 }
