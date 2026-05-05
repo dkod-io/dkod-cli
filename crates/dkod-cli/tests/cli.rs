@@ -309,6 +309,110 @@ fn init_hook_install_is_idempotent() {
     );
 }
 
+/// Helper: extract the repo_hash from the first dkod hook command in
+/// `.claude/settings.local.json`. Hook commands look like
+/// `dkod capture-hook <hash> <Event>` (see `dkod_hook_entry_for_event`),
+/// so the hash is the second whitespace-delimited token. Used by the
+/// regression test that proves a subdir-cwd init produces the same
+/// hash as a root-cwd init.
+fn extract_first_dkod_hash(repo: &std::path::Path) -> String {
+    let path = repo.join(".claude/settings.local.json");
+    let body = std::fs::read_to_string(&path).expect("settings.local.json missing");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("settings.local.json not JSON");
+    let hooks = v
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .expect(".claude/settings.local.json has no hooks object");
+    for entry in hooks
+        .values()
+        .filter_map(|arr| arr.as_array())
+        .flat_map(|arr| arr.iter())
+    {
+        if entry
+            .get("_dkod")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
+        {
+            let cmd = entry
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|h| h.get("command"))
+                .and_then(|c| c.as_str())
+                .expect("dkod hook entry has no command string");
+            // `dkod capture-hook <hash> <Event>` — token index 2.
+            let hash = cmd
+                .split_whitespace()
+                .nth(2)
+                .expect("hook command missing repo_hash token")
+                .to_string();
+            return hash;
+        }
+    }
+    panic!("no dkod-marked hook entry found");
+}
+
+/// Regression test for CodeRabbit's PR #10 finding: `dkod init` from
+/// a subdirectory must hash to the same `repo_hash` as `dkod init`
+/// from the repo root. Otherwise the hook command (which embeds the
+/// hash) points at a different socket than the server bound — and
+/// hook-server communication breaks.
+#[test]
+fn init_from_subdirectory_uses_repo_root_for_hash() {
+    let home = tempfile::TempDir::new().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+    let subdir = tmp.path().join("src");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    // Run from the repo root — captures the baseline hash.
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+    let hash_from_root = extract_first_dkod_hash(tmp.path());
+
+    // Wipe the per-repo settings so the next run writes from scratch
+    // — that exercises the resolve-root path with a fresh file.
+    let settings = tmp.path().join(".claude/settings.local.json");
+    std::fs::remove_file(&settings).unwrap();
+
+    // Now run from the subdirectory — MUST resolve to the same repo
+    // root and therefore the same hash.
+    Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&subdir)
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+    let hash_from_subdir = extract_first_dkod_hash(tmp.path());
+
+    assert_eq!(
+        hash_from_root, hash_from_subdir,
+        "init from /repo and /repo/src must hash to the same repo identity"
+    );
+
+    // The hook entries also have to land in the REPO ROOT's
+    // `.claude/settings.local.json`, not in the subdirectory's. (If
+    // they were written under `subdir/.claude/`, claude wouldn't see
+    // them — Claude Code searches up from the launch cwd, but the
+    // local-settings file is anchored to the repo root by convention.)
+    assert!(
+        tmp.path().join(".claude/settings.local.json").exists(),
+        "settings.local.json should be at the repo root"
+    );
+    assert!(
+        !subdir.join(".claude/settings.local.json").exists(),
+        "settings.local.json should NOT be at the subdirectory"
+    );
+}
+
 #[test]
 fn init_skips_hook_install_when_disabled_globally() {
     // Mirror the fake-HOME pattern from

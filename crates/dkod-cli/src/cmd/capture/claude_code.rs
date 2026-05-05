@@ -192,6 +192,35 @@ pub enum InitInstallOutcome {
     SkippedDisabledGlobally,
 }
 
+/// Resolve the canonical git working-tree root for `cwd`.
+///
+/// Both `install_hooks_at_init` and `run_server_command` MUST agree
+/// on a stable identity for "this repo", because:
+///
+/// - `compute_repo_hash` derives the socket path from this root.
+/// - `install_hooks` writes `.claude/settings.local.json` here.
+///
+/// Hashing the raw `cwd` instead would mean a `dkod init` run from
+/// `/repo/src` and a `dkod capture claude-code` run from `/repo`
+/// produce different hashes — so the hook can't reach the server,
+/// and the per-repo settings file lands in the wrong subdirectory.
+/// Going through `gix::Repository::work_dir()` plus a `canonicalize`
+/// pass is what guarantees they agree. Mirrors the pattern in
+/// `dkod_core::capture::worktree_diff`.
+fn resolve_repo_root(cwd: &Path) -> Result<PathBuf> {
+    let repo = gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    let work_dir = repo
+        .work_dir()
+        .ok_or_else(|| {
+            anyhow!("dkod requires a git working directory (bare repos aren't supported)")
+        })?
+        .to_path_buf();
+    // Canonicalise so callers that hand us a symlinked path (`/var/...`
+    // on macOS) or a relative path (`./src`) still hash to the same
+    // value as the canonical absolute form.
+    Ok(std::fs::canonicalize(&work_dir).unwrap_or(work_dir))
+}
+
 /// Install dkod's Claude Code hooks at `dkod init` time, so a user
 /// who runs `dkod init` and then starts a `claude` session in this
 /// repo gets capture for free — without first having to launch
@@ -214,9 +243,7 @@ pub fn install_hooks_at_init(cwd: &Path) -> Result<InitInstallOutcome> {
     if global_hooks_disabled()? {
         return Ok(InitInstallOutcome::SkippedDisabledGlobally);
     }
-    // Canonicalise so different cwds inside the same repo produce the
-    // same hash — matches the server-startup path's logic.
-    let repo_root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let repo_root = resolve_repo_root(cwd)?;
     let repo_hash = compute_repo_hash(&repo_root);
     install_hooks(&repo_root, &repo_hash)
         .with_context(|| "install dkod hooks into .claude/settings.local.json")?;
@@ -344,13 +371,12 @@ fn log_hook_error(repo_hash: &str, msg: &str) {
 /// `_args` is currently unused (V1 has no flags). Kept in the signature so
 /// future flags can land without changing main.rs.
 pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
-    // 1. Must be a git repo.
-    gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
-
-    // 2. Canonicalise the repo root (so different cwds inside the same repo
-    // produce the same hash). Falls back to the literal cwd if canonicalize
-    // fails (shouldn't happen if `gix::open` succeeded, but cheap safety).
-    let repo_root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    // 1. Resolve the canonical git working-tree root. Goes through
+    //    `resolve_repo_root` so this command's identity for the repo
+    //    matches what `dkod init` (via `install_hooks_at_init`) would
+    //    produce — otherwise the hook entries it wrote would point at
+    //    a different socket path than the one we bind below.
+    let repo_root = resolve_repo_root(cwd)?;
     let repo_hash = compute_repo_hash(&repo_root);
 
     // 3. Resolve socket path (V1: macOS / Linux only).
