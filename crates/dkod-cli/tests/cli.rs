@@ -99,6 +99,14 @@ fn init_outside_a_repo_errors() {
 
 /// Helper: count occurrences of the dkod fetch refspec in the named
 /// remote's `fetch` config entries via `git config --get-all`.
+///
+/// `git config --get-all` returns exit 0 when at least one match is
+/// found and exit 1 when the key is unset. Both are expected outcomes
+/// for our tests (the latter happens in `init_skips_refspec_when_no_remote`
+/// where we deliberately don't add the remote). Any OTHER non-zero
+/// exit is a real failure (corrupt repo, missing git, …) and we
+/// panic — without this guard a transient git failure would silently
+/// return `0` and pass tests that should have caught it.
 fn count_dkod_refspecs(repo: &std::path::Path, remote: &str) -> usize {
     let key = format!("remote.{remote}.fetch");
     let out = StdCommand::new("git")
@@ -107,6 +115,12 @@ fn count_dkod_refspecs(repo: &std::path::Path, remote: &str) -> usize {
         .args(["config", "--get-all", &key])
         .output()
         .unwrap();
+    let code = out.status.code();
+    assert!(
+        out.status.success() || code == Some(1),
+        "git config --get-all {key} exited with {code:?}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.trim() == "+refs/dkod/*:refs/dkod/*")
@@ -194,7 +208,11 @@ fn init_writes_refspec_to_all_remotes() {
     let tmp = tempfile::TempDir::new().unwrap();
     init_git_repo(tmp.path());
     add_remote(tmp.path(), "origin", "https://example.invalid/origin.git");
-    add_remote(tmp.path(), "upstream", "https://example.invalid/upstream.git");
+    add_remote(
+        tmp.path(),
+        "upstream",
+        "https://example.invalid/upstream.git",
+    );
 
     Command::cargo_bin("dkod")
         .unwrap()
