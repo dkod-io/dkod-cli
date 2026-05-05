@@ -1,3 +1,11 @@
+# Action versions are pinned to Node 24-compatible major releases per
+# dkod-cli issue #4 (Node 20 deprecation 2026-09-16). All jobs run on
+# GitHub-hosted runners (ubuntu-latest, macos-latest) which ship
+# evergreen runner versions (well past v2.327.1) and Node 24, so the
+# breaking-change scopes for actions/checkout@v6 (credential
+# persistence in container actions / self-hosted runners),
+# actions/download-artifact@v8 (runner version requirement), and
+# softprops/action-gh-release@v3 (Node 24 runtime) do not apply here.
 name: ci
 on:
   push:
@@ -9,7 +17,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
