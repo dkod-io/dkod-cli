@@ -113,32 +113,52 @@ mod tests {
         redact(input, &cfg)
     }
 
+    // The token-shaped string literals below are TEST FIXTURES, not
+    // real secrets — every value is either an upstream-documented
+    // example placeholder (`AKIAIOSFODNN7EXAMPLE` is AWS's own canon)
+    // or a constructed-pattern that satisfies our regex's character
+    // class without being valid at any provider. The
+    // `gitleaks:allow` pragmas tell secret scanners (gitleaks,
+    // CodeRabbit's secret detector, GitHub Advanced Security if it
+    // ever lights up on this repo) to skip these specific lines so
+    // the redactor's coverage tests can keep their realistic shapes
+    // without polluting alert dashboards. The pragmas MUST be on
+    // the same line as the literal — most scanners only honour
+    // line-local directives — so the longer fixtures live in `let`
+    // bindings rather than inlined into the assertion expression.
+
     #[test]
     fn redacts_aws_access_key() {
-        assert_eq!(r("AKIAIOSFODNN7EXAMPLE"), "[REDACTED:aws]");
-        assert!(r("token: AKIAIOSFODNN7EXAMPLE rest").contains("[REDACTED:aws]"));
+        let aws = "AKIAIOSFODNN7EXAMPLE"; // gitleaks:allow
+        assert_eq!(r(aws), "[REDACTED:aws]");
+        assert!(r(&format!("token: {aws} rest")).contains("[REDACTED:aws]"));
     }
 
+    // `#[rustfmt::skip]` on the next two tests keeps rustfmt from
+    // breaking the `let` lines so the `// gitleaks:allow` pragma can
+    // sit on the same line as the literal — most scanners only honour
+    // line-local directives, and cargo fmt's default 100-char limit
+    // would otherwise force a multi-line layout that defeats them.
     #[test]
+    #[rustfmt::skip]
     fn redacts_github_token() {
-        assert!(r("ghp_1234567890abcdefABCDEF1234567890abcdef").contains("[REDACTED:github_token]"));
-        assert!(r(
-            "github_pat_11ABCDEFG_1234567890abcdef1234567890ABCDEF1234567890abcdef1234567890ABCDEF"
-        )
-        .contains("[REDACTED:github_token]"));
+        let ghp = "ghp_1234567890abcdefABCDEF1234567890abcdef"; // gitleaks:allow
+        assert!(r(ghp).contains("[REDACTED:github_token]"));
+        let pat = "github_pat_11ABCDEFG_1234567890abcdef1234567890ABCDEF1234567890abcdef1234567890ABCDEF"; // gitleaks:allow
+        assert!(r(pat).contains("[REDACTED:github_token]"));
     }
 
     #[test]
+    #[rustfmt::skip]
     fn redacts_openai_key() {
-        assert!(
-            r("sk-proj-abcdefABCDEF0123456789_-abcdefABCDEF0123456789_-abcdefAB")
-                .contains("[REDACTED:openai_key]")
-        );
+        let key = "sk-proj-abcdefABCDEF0123456789_-abcdefABCDEF0123456789_-abcdefAB"; // gitleaks:allow
+        assert!(r(key).contains("[REDACTED:openai_key]"));
     }
 
     #[test]
     fn redacts_stripe_key() {
-        assert!(r("sk_live_abcdefABCDEF0123456789ABCD").contains("[REDACTED:stripe]"));
+        let key = "sk_live_abcdefABCDEF0123456789ABCD"; // gitleaks:allow
+        assert!(r(key).contains("[REDACTED:stripe]"));
     }
 
     #[test]
