@@ -1,3 +1,13 @@
+# Action versions are pinned to Node 24-compatible major releases per
+# dkod-cli issue #4 (Node 20 deprecation 2026-09-16). All jobs run on
+# GitHub-hosted runners (ubuntu-latest, macos-latest) which ship
+# evergreen runner versions (well past v2.327.1) and Node 24, so the
+# breaking-change scopes for actions/checkout@v6 (credential
+# persistence in container actions / self-hosted runners),
+# actions/download-artifact@v8 (runner version requirement), and
+# softprops/action-gh-release@v3 (Node 24 runtime) do not apply here.
+# We upload .tar.gz tarballs, so download-artifact@v8's "no auto-unzip
+# for non-zip payloads" change is also a no-op for us.
 name: release
 
 on:
@@ -33,7 +43,7 @@ jobs:
       VERSION: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -83,7 +93,7 @@ jobs:
           echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dkod-${{ matrix.target }}
           path: |
@@ -100,7 +110,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -112,7 +122,7 @@ jobs:
           ls -la release
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
