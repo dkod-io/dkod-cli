@@ -9,8 +9,12 @@ use std::process::Command;
 const DKOD_FETCH_REFSPEC: &str = "+refs/dkod/*:refs/dkod/*";
 
 pub fn run(cwd: &Path) -> Result<()> {
-    // 1. Ensure we're inside a git repo.
-    gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    // 1. Ensure we're inside (or under) a git repo. `gix::discover`
+    //    walks up from `cwd` so `dkod init` works whether the user
+    //    is at the repo root or in any subdirectory — matching how
+    //    `git` itself behaves and what `resolve_repo_root` does
+    //    further down the call stack.
+    gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
 
     // 2. If a config already exists, validate it (via load_config); otherwise
     //    write a default and validate that.

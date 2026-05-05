@@ -207,8 +207,13 @@ pub enum InitInstallOutcome {
 /// Going through `gix::Repository::work_dir()` plus a `canonicalize`
 /// pass is what guarantees they agree. Mirrors the pattern in
 /// `dkod_core::capture::worktree_diff`.
+///
+/// Uses `gix::discover` (not `gix::open`) so a user can run dkod
+/// commands from anywhere inside the repo — `gix::open` would only
+/// accept the work-dir or the `.git` dir directly.
 fn resolve_repo_root(cwd: &Path) -> Result<PathBuf> {
-    let repo = gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    let repo =
+        gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
     let work_dir = repo
         .work_dir()
         .ok_or_else(|| {
