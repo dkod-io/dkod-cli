@@ -212,8 +212,7 @@ pub enum InitInstallOutcome {
 /// commands from anywhere inside the repo — `gix::open` would only
 /// accept the work-dir or the `.git` dir directly.
 fn resolve_repo_root(cwd: &Path) -> Result<PathBuf> {
-    let repo =
-        gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    let repo = gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
     let work_dir = repo
         .work_dir()
         .ok_or_else(|| {
