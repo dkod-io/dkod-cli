@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
 use dkod_core::capture::claude_code::{run_server, FinishedSession, WireEvent};
 
@@ -257,6 +260,7 @@ pub fn install_hooks_at_init(cwd: &Path) -> Result<InitInstallOutcome> {
 /// Remove only the dkod-installed hook entries from
 /// `.claude/settings.local.json`. Preserves everything else. If the file
 /// doesn't exist or has no dkod entries, no-op.
+#[allow(dead_code)]
 fn uninstall_hooks(repo_root: &Path) -> Result<()> {
     let path = repo_root.join(".claude/settings.local.json");
     if !path.exists() {
@@ -372,21 +376,21 @@ fn log_hook_error(repo_hash: &str, msg: &str) {
 
 /// Implementation of `dkod capture claude-code`.
 ///
-/// `_args` is currently unused (V1 has no flags). Kept in the signature so
-/// future flags can land without changing main.rs.
-pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
-    // 1. Resolve the canonical git working-tree root. Goes through
-    //    `resolve_repo_root` so this command's identity for the repo
-    //    matches what `dkod init` (via `install_hooks_at_init`) would
-    //    produce — otherwise the hook entries it wrote would point at
-    //    a different socket path than the one we bind below.
+/// Flags:
+///   `--foreground`       — run in foreground (default when invoked manually)
+///   `--idle-timeout <s>` — shut down after this many idle seconds (default 600)
+///   `--detached`         — internal flag: spawned by the hook, skip hook install
+pub fn run_server_command(cwd: &Path, args: Vec<String>) -> Result<()> {
+    let foreground = args.iter().any(|a| a == "--foreground");
+    let detached = args.iter().any(|a| a == "--detached");
+    let idle_timeout_secs = parse_flag_value(&args, "--idle-timeout")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
+
     let repo_root = resolve_repo_root(cwd)?;
     let repo_hash = compute_repo_hash(&repo_root);
-
-    // 3. Resolve socket path (V1: macOS / Linux only).
     let socket_path = resolve_socket_path(&repo_hash)?;
 
-    // 4. Stale-socket check.
     if another_server_is_running(&socket_path) {
         let hb = heartbeat_path(&repo_hash)
             .map(|p| p.display().to_string())
@@ -395,12 +399,10 @@ pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
             "dkod capture claude-code is already running for this repo (PID file at {hb})"
         ));
     }
-    // Either no peer or stale socket — remove and proceed.
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    // 5. Refuse if the user has globally disabled hooks.
     if global_hooks_disabled()? {
         return Err(anyhow!(
             "dkod cannot capture: ~/.claude/settings.json has disableAllHooks=true; \
@@ -409,11 +411,11 @@ pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
         ));
     }
 
-    // 6. Install hooks into the repo's .claude/settings.local.json.
-    install_hooks(&repo_root, &repo_hash)
-        .with_context(|| "install dkod hooks into .claude/settings.local.json")?;
+    if !detached {
+        install_hooks(&repo_root, &repo_hash)
+            .with_context(|| "install dkod hooks into .claude/settings.local.json")?;
+    }
 
-    // 7. Heartbeat file.
     let heartbeat = heartbeat_path(&repo_hash)?;
     let started_at = rfc3339_utc(SystemTime::now());
     let heartbeat_body = serde_json::json!({
@@ -421,19 +423,25 @@ pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
         "socket_path": socket_path.display().to_string(),
         "started_at": started_at,
         "repo_root": repo_root.display().to_string(),
+        "detached": detached,
+        "idle_timeout_secs": idle_timeout_secs,
     });
     std::fs::write(&heartbeat, serde_json::to_string_pretty(&heartbeat_body)?)
         .with_context(|| format!("write heartbeat {}", heartbeat.display()))?;
 
-    // Print starting message.
-    println!(
-        "dkod: capturing Claude Code sessions in {} (Ctrl-C to stop)",
-        repo_root.display()
-    );
+    let idle_timeout = if foreground && !detached {
+        None
+    } else {
+        Some(Duration::from_secs(idle_timeout_secs))
+    };
 
-    // 8 & 10. Build a tokio runtime, install signal handlers, run the
-    // server. We exit the runtime once a signal arrives, then perform
-    // synchronous cleanup before returning.
+    if !detached {
+        eprintln!(
+            "dkod: capturing Claude Code sessions in {} (Ctrl-C to stop)",
+            repo_root.display()
+        );
+    }
+
     let cfg = super::super::load_config(&repo_root)?;
     let repo_root_for_cb = repo_root.clone();
     let on_finished = move |fs: FinishedSession| {
@@ -451,6 +459,7 @@ pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
         let server = run_server(
             &socket_path_for_server,
             Duration::from_secs(60),
+            idle_timeout,
             on_finished,
         );
         tokio::select! {
@@ -465,16 +474,16 @@ pub fn run_server_command(cwd: &Path, _args: Vec<String>) -> Result<()> {
         }
     });
 
-    // 8a/8b/8c: cleanup. Best-effort — log on error but always proceed.
-    if let Err(e) = uninstall_hooks(&repo_root) {
-        eprintln!("dkod: claude-code: failed to uninstall hooks: {e:#}");
-    }
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
     let _ = std::fs::remove_file(&heartbeat);
 
     Ok(())
+}
+
+fn parse_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).map(|s| s.as_str()))
 }
 
 #[cfg(unix)]
@@ -568,7 +577,6 @@ fn is_valid_repo_hash(s: &str) -> bool {
 }
 
 fn hook_inner(repo_hash: &str, event_name: &str) -> Result<()> {
-    // 1. Read stdin as JSON. Empty input is allowed for tests / robustness.
     let mut buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut buf);
     let input: Value = if buf.trim().is_empty() {
@@ -577,7 +585,6 @@ fn hook_inner(repo_hash: &str, event_name: &str) -> Result<()> {
         serde_json::from_str(&buf).context("parse hook input JSON from stdin")?
     };
 
-    // 2. Build a wire event from the hook event name + input.
     let event = match build_wire_event(event_name, &input) {
         Some(e) => e,
         None => {
@@ -586,24 +593,58 @@ fn hook_inner(repo_hash: &str, event_name: &str) -> Result<()> {
         }
     };
 
-    // 3. Resolve socket and connect. UnixStream::connect blocks only as
-    // long as the kernel takes to negotiate the local socket (microseconds
-    // when the server is alive; instant ECONNREFUSED / ENOENT otherwise),
-    // so we don't need an explicit connect timeout.
     let socket_path = resolve_socket_path(repo_hash)?;
-    let mut stream = StdUnixStream::connect(&socket_path)
-        .with_context(|| format!("connect {}", socket_path.display()))?;
+
+    let mut stream = match StdUnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(_) => {
+            lazy_spawn_server(&input, repo_hash)?;
+            wait_for_socket(&socket_path, Duration::from_millis(800))?;
+            StdUnixStream::connect(&socket_path)
+                .with_context(|| format!("connect after spawn {}", socket_path.display()))?
+        }
+    };
     stream.set_write_timeout(Some(Duration::from_secs(1))).ok();
 
-    // 4. Write NDJSON line + flush.
     let mut line = serde_json::to_string(&event).context("serialise wire event")?;
     line.push('\n');
-    stream
-        .write_all(line.as_bytes())
-        .context("write wire event")?;
+    stream.write_all(line.as_bytes()).context("write wire event")?;
     stream.flush().ok();
     drop(stream);
     Ok(())
+}
+
+fn lazy_spawn_server(input: &Value, repo_hash: &str) -> Result<()> {
+    let cwd = input.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+    let exe = std::env::current_exe().context("resolve dkod binary path")?;
+    let log_path = format!("/tmp/dkod-server-{repo_hash}.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("open log {log_path}"))?;
+    let stderr_file = log_file.try_clone().context("clone log fd")?;
+
+    Command::new(exe)
+        .args(["capture", "claude-code", "--detached"])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(stderr_file))
+        .spawn()
+        .context("spawn detached capture server")?;
+    Ok(())
+}
+
+fn wait_for_socket(socket_path: &Path, budget: Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < budget {
+        if socket_path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(anyhow!("server socket did not appear within {}ms", budget.as_millis()))
 }
 
 /// Map a hook event name + parsed hook input → `WireEvent`. Returns
@@ -1011,6 +1052,7 @@ mod tests {
             let _ = run_server(
                 &socket_path_for_server,
                 Duration::from_secs(60),
+                None,
                 move |fs: FinishedSession| {
                     let mut session =
                         dkod_core::capture::claude_code::parse_transcript(&fs.transcript_path)

@@ -23,7 +23,8 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Wire-protocol envelope. The hook script speaks NDJSON to the server, one
 /// of these per line. Variants match the seven `kind`s in the design doc.
@@ -597,7 +598,12 @@ fn summarize_prompt(s: &str) -> String {
 /// transcript path as "no transcript was ever announced" and either skip
 /// the flush or fall back to scanning `~/.claude/projects/<encoded-cwd>/`
 /// for the matching `<session_id>.jsonl`.
-pub async fn run_server<F>(socket_path: &Path, orphan_grace: Duration, on_finished: F) -> Result<()>
+pub async fn run_server<F>(
+    socket_path: &Path,
+    orphan_grace: Duration,
+    idle_timeout: Option<Duration>,
+    on_finished: F,
+) -> Result<()>
 where
     F: Fn(FinishedSession) + Send + Sync + 'static,
 {
@@ -605,32 +611,34 @@ where
     use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
     use tokio::net::UnixListener;
 
-    // Best-effort: remove a stale socket file before binding.
     if socket_path.exists() {
         let _ = std::fs::remove_file(socket_path);
     }
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("bind unix socket {}", socket_path.display()))?;
 
-    // Ensure the socket is mode 0600.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
     }
 
-    // Tracker is shared across the per-connection readers and the watchdog
-    // tick. We use a std::sync::Mutex (not tokio::sync) — every critical
-    // section is short and synchronous, and we don't await while holding
-    // the lock.
     let tracker = Arc::new(Mutex::new(SessionTracker::new()));
     let on_finished = Arc::new(on_finished);
 
-    // Watchdog task: every second, sweep orphans and fire callbacks for
-    // any sessions that timed out.
+    fn epoch_secs() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    }
+
+    let last_event = Arc::new(AtomicU64::new(epoch_secs()));
+
+    let idle_shutdown = Arc::new(tokio::sync::Notify::new());
+
     let watchdog = {
         let tracker = tracker.clone();
         let on_finished = on_finished.clone();
+        let last_event = last_event.clone();
+        let idle_shutdown = idle_shutdown.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -646,60 +654,83 @@ where
                 for finished in orphans {
                     on_finished(finished);
                 }
-            }
-        })
-    };
-
-    // Accept loop: spawn a per-connection NDJSON reader. Each reader parses
-    // lines, applies them to the shared tracker, and fires the callback
-    // when the tracker reports a finished session.
-    loop {
-        let (stream, _addr) = match listener.accept().await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("dkod: claude-code: accept error: {e}");
-                watchdog.abort();
-                return Err(anyhow::anyhow!("unix socket accept failed: {e}"));
-            }
-        };
-        let tracker = tracker.clone();
-        let on_finished = on_finished.clone();
-        tokio::spawn(async move {
-            let reader = TokioBufReader::new(stream);
-            let mut lines = reader.lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        match serde_json::from_str::<WireEvent>(&line) {
-                            Ok(event) => {
-                                let finished = {
-                                    let mut t = match tracker.lock() {
-                                        Ok(g) => g,
-                                        Err(p) => p.into_inner(),
-                                    };
-                                    t.apply(event)
-                                };
-                                if let Some(fs) = finished {
-                                    on_finished(fs);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("dkod: claude-code: bad NDJSON line: {e}");
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        eprintln!("dkod: claude-code: read error: {e}");
+                if let Some(timeout) = idle_timeout {
+                    let idle = epoch_secs().saturating_sub(last_event.load(Ordering::Relaxed));
+                    let has_sessions = {
+                        let t = match tracker.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        !t.is_empty()
+                    };
+                    if idle >= timeout.as_secs() && !has_sessions {
+                        eprintln!("dkod: claude-code: idle timeout ({idle}s), shutting down");
+                        idle_shutdown.notify_one();
                         break;
                     }
                 }
             }
-        });
+        })
+    };
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _addr) = match result {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("dkod: claude-code: accept error: {e}");
+                        watchdog.abort();
+                        return Err(anyhow::anyhow!("unix socket accept failed: {e}"));
+                    }
+                };
+                let tracker = tracker.clone();
+                let on_finished = on_finished.clone();
+                let last_event = last_event.clone();
+                tokio::spawn(async move {
+                    let reader = TokioBufReader::new(stream);
+                    let mut lines = reader.lines();
+                    loop {
+                        match lines.next_line().await {
+                            Ok(Some(line)) => {
+                                if line.trim().is_empty() {
+                                    continue;
+                                }
+                                last_event.store(epoch_secs(), Ordering::Relaxed);
+                                match serde_json::from_str::<WireEvent>(&line) {
+                                    Ok(event) => {
+                                        let finished = {
+                                            let mut t = match tracker.lock() {
+                                                Ok(g) => g,
+                                                Err(p) => p.into_inner(),
+                                            };
+                                            t.apply(event)
+                                        };
+                                        if let Some(fs) = finished {
+                                            on_finished(fs);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("dkod: claude-code: bad NDJSON line: {e}");
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                eprintln!("dkod: claude-code: read error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+            _ = idle_shutdown.notified() => {
+                watchdog.abort();
+                break;
+            }
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1118,6 +1149,7 @@ mod tests {
             let _ = run_server(
                 &socket_path_for_server,
                 Duration::from_secs(60),
+                None,
                 move |fs| {
                     finished_count_cb.fetch_add(1, Ordering::SeqCst);
                     *last_reason_cb.lock().unwrap() = Some(fs.end_reason);
