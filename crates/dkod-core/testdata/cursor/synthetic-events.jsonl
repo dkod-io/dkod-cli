@@ -1,0 +1,6 @@
+{"type":"system","timestamp":"2026-05-06T12:00:00.000Z","session_id":"cursor-sess-001","model":"gpt-5"}
+{"type":"user","timestamp":"2026-05-06T12:00:01.000Z","message":{"content":[{"type":"text","text":"please add a hello.txt file with the content 'hi from cursor'"}]}}
+{"type":"tool_use","timestamp":"2026-05-06T12:00:02.000Z","name":"file_edit","id":"tool_c01","input":{"file_path":"hello.txt","content":"hi from cursor"}}
+{"type":"tool_result","timestamp":"2026-05-06T12:00:03.000Z","tool_use_id":"tool_c01","content":"Created hello.txt"}
+{"type":"assistant","timestamp":"2026-05-06T12:00:04.000Z","message":{"content":[{"type":"text","text":"I created hello.txt with the content 'hi from cursor'."}]}}
+{"type":"result","timestamp":"2026-05-06T12:00:05.000Z","status":"success"}
