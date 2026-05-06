@@ -483,7 +483,9 @@ pub fn run_server_command(cwd: &Path, args: Vec<String>) -> Result<()> {
 }
 
 fn parse_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).map(|s| s.as_str()))
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).map(|s| s.as_str()))
 }
 
 #[cfg(unix)]
@@ -608,7 +610,9 @@ fn hook_inner(repo_hash: &str, event_name: &str) -> Result<()> {
 
     let mut line = serde_json::to_string(&event).context("serialise wire event")?;
     line.push('\n');
-    stream.write_all(line.as_bytes()).context("write wire event")?;
+    stream
+        .write_all(line.as_bytes())
+        .context("write wire event")?;
     stream.flush().ok();
     drop(stream);
     Ok(())
@@ -644,7 +648,10 @@ fn wait_for_socket(socket_path: &Path, budget: Duration) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    Err(anyhow!("server socket did not appear within {}ms", budget.as_millis()))
+    Err(anyhow!(
+        "server socket did not appear within {}ms",
+        budget.as_millis()
+    ))
 }
 
 /// Map a hook event name + parsed hook input → `WireEvent`. Returns

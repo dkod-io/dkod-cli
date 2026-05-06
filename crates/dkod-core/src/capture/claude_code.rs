@@ -627,7 +627,10 @@ where
     let on_finished = Arc::new(on_finished);
 
     fn epoch_secs() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     let last_event = Arc::new(AtomicU64::new(epoch_secs()));
