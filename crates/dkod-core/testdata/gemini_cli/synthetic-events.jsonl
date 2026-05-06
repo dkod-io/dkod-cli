@@ -1,0 +1,6 @@
+{"type":"INIT","timestamp":"2026-05-06T11:00:00.000Z","session_id":"gemini-sess-001","model":"gemini-2.5-flash"}
+{"type":"MESSAGE","timestamp":"2026-05-06T11:00:01.000Z","role":"user","content":"please add a hello.txt file with the content 'hi from gemini'"}
+{"type":"TOOL_USE","timestamp":"2026-05-06T11:00:02.000Z","tool_name":"write_file","tool_id":"tool_g01","parameters":{"file_path":"hello.txt","content":"hi from gemini"}}
+{"type":"TOOL_RESULT","timestamp":"2026-05-06T11:00:03.000Z","tool_id":"tool_g01","status":"success","output":"Created hello.txt"}
+{"type":"MESSAGE","timestamp":"2026-05-06T11:00:04.000Z","role":"assistant","content":"I created hello.txt with the content 'hi from gemini'."}
+{"type":"RESULT","timestamp":"2026-05-06T11:00:05.000Z","status":"success","stats":{"total_tokens":150}}

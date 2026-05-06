@@ -24,6 +24,7 @@ pub enum Agent {
     ClaudeCode,
     Codex,
     CopilotCli,
+    GeminiCli,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
