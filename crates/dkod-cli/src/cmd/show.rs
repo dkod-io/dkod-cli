@@ -10,6 +10,7 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
     let agent = match s.agent {
         dkod_core::Agent::ClaudeCode => "claude_code",
         dkod_core::Agent::Codex => "codex",
+        dkod_core::Agent::CopilotCli => "copilot_cli",
     };
     println!("session {}", s.id);
     println!("agent   {}", agent);

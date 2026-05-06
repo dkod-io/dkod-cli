@@ -1,0 +1,7 @@
+{"type":"session.start","timestamp":"2026-05-06T10:00:00.000Z","data":{"session_id":"copilot-sess-001","model":"gpt-5","cwd":"/tmp/demo"}}
+{"type":"user.message","timestamp":"2026-05-06T10:00:01.000Z","data":{"text":"please add a hello.txt file with the content 'hi from copilot'"}}
+{"type":"reasoning","timestamp":"2026-05-06T10:00:02.000Z","data":{"text":"the user wants a file created; I'll use the edit tool"}}
+{"type":"tool.execution_start","timestamp":"2026-05-06T10:00:03.000Z","data":{"tool_name":"edit_file","tool_id":"tool_001","parameters":{"file_path":"hello.txt","content":"hi from copilot"}}}
+{"type":"tool.execution_complete","timestamp":"2026-05-06T10:00:04.000Z","data":{"tool_id":"tool_001","output":"Created hello.txt","status":"success"}}
+{"type":"assistant.message","timestamp":"2026-05-06T10:00:05.000Z","data":{"text":"I created hello.txt with the content 'hi from copilot'."}}
+{"type":"session.shutdown","timestamp":"2026-05-06T10:00:06.000Z","data":{}}

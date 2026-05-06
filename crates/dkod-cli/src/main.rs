@@ -51,8 +51,11 @@ fn main() -> anyhow::Result<()> {
             "claude-code" => {
                 cmd::capture::claude_code::run_server_command(&std::env::current_dir()?, args)
             }
+            "copilot-cli" | "copilot" => {
+                cmd::capture::copilot_cli::run(&std::env::current_dir()?, args)
+            }
             other => Err(anyhow::anyhow!(
-                "unknown agent: {other} (V1 supports: codex, claude-code)"
+                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot)"
             )),
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),

@@ -23,6 +23,7 @@ impl Session {
 pub enum Agent {
     ClaudeCode,
     Codex,
+    CopilotCli,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
