@@ -85,10 +85,7 @@ pub fn parse_events(events_path: &Path) -> Result<Session> {
             }
         };
 
-        let event_type = record
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let event_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let data = record
             .get("data")
             .cloned()
@@ -139,10 +136,17 @@ pub fn parse_events(events_path: &Path) -> Result<Session> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                extract_files_from_tool(&tool_name, &tool_input, &mut files_seen, &mut session.files_touched);
+                extract_files_from_tool(
+                    tool_name,
+                    &tool_input,
+                    &mut files_seen,
+                    &mut session.files_touched,
+                );
 
                 let idx = session.messages.len();
-                session.messages.push(Message::tool(tool_name, tool_input, ""));
+                session
+                    .messages
+                    .push(Message::tool(tool_name, tool_input, ""));
                 if !tool_id.is_empty() {
                     call_to_msg.insert(tool_id.to_string(), idx);
                 }
@@ -184,10 +188,7 @@ pub fn parse_events(events_path: &Path) -> Result<Session> {
                 // Terminal event — no messages to emit.
             }
             "error" => {
-                let msg = data
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let msg = data.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 if !msg.is_empty() {
                     eprintln!("dkod: copilot-cli: agent error: {msg}");
                 }
@@ -227,7 +228,10 @@ pub fn parse_events(events_path: &Path) -> Result<Session> {
 /// args, capture the session ID from stdout, then read events.jsonl.
 pub fn capture_copilot_cli(opts: CaptureOptions) -> Result<Session> {
     let mut cmd = Command::new(&opts.copilot_bin);
-    cmd.arg("-p").arg("--output-format").arg("json").arg("--no-ask-user");
+    cmd.arg("-p")
+        .arg("--output-format")
+        .arg("json")
+        .arg("--no-ask-user");
     cmd.args(&opts.args);
     cmd.current_dir(&opts.cwd);
     cmd.stdout(Stdio::piped());
@@ -357,10 +361,7 @@ fn parse_stdout_events(events: &[serde_json::Value]) -> Result<Session> {
     let mut first_user_for_summary: Option<String> = None;
 
     for record in events {
-        let event_type = record
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let event_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let data = record
             .get("data")
             .cloned()
@@ -406,10 +407,17 @@ fn parse_stdout_events(events: &[serde_json::Value]) -> Result<Session> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                extract_files_from_tool(tool_name, &tool_input, &mut files_seen, &mut session.files_touched);
+                extract_files_from_tool(
+                    tool_name,
+                    &tool_input,
+                    &mut files_seen,
+                    &mut session.files_touched,
+                );
 
                 let idx = session.messages.len();
-                session.messages.push(Message::tool(tool_name, tool_input, ""));
+                session
+                    .messages
+                    .push(Message::tool(tool_name, tool_input, ""));
                 if !tool_id.is_empty() {
                     call_to_msg.insert(tool_id.to_string(), idx);
                 }
@@ -579,7 +587,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/copilot_cli/synthetic-events.jsonl")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/copilot_cli/synthetic-events.jsonl")
     }
 
     #[test]
@@ -591,9 +600,18 @@ mod tests {
         assert!(!session.prompt_summary.is_empty());
 
         let has = |pred: fn(&crate::Message) -> bool| session.messages.iter().any(pred);
-        assert!(has(|m| matches!(m, crate::Message::User { .. })), "no user msg");
-        assert!(has(|m| matches!(m, crate::Message::Assistant { .. })), "no assistant msg");
-        assert!(has(|m| matches!(m, crate::Message::Tool { .. })), "no tool msg");
+        assert!(
+            has(|m| matches!(m, crate::Message::User { .. })),
+            "no user msg"
+        );
+        assert!(
+            has(|m| matches!(m, crate::Message::Assistant { .. })),
+            "no assistant msg"
+        );
+        assert!(
+            has(|m| matches!(m, crate::Message::Tool { .. })),
+            "no tool msg"
+        );
     }
 
     #[test]
