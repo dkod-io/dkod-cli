@@ -19,7 +19,7 @@ enum Cmd {
     Init,
     /// Capture a session by wrapping an agent invocation
     Capture {
-        /// Agent name (e.g. "codex", "claude-code")
+        /// Agent name (e.g. "codex", "claude-code", "copilot-cli", "gemini-cli")
         agent: String,
         /// Args forwarded to the agent (after `--`)
         #[arg(last = true)]
@@ -54,8 +54,11 @@ fn main() -> anyhow::Result<()> {
             "copilot-cli" | "copilot" => {
                 cmd::capture::copilot_cli::run(&std::env::current_dir()?, args)
             }
+            "gemini-cli" | "gemini" => {
+                cmd::capture::gemini_cli::run(&std::env::current_dir()?, args)
+            }
             other => Err(anyhow::anyhow!(
-                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot)"
+                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, gemini-cli/gemini)"
             )),
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),

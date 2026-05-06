@@ -11,6 +11,7 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
         dkod_core::Agent::ClaudeCode => "claude_code",
         dkod_core::Agent::Codex => "codex",
         dkod_core::Agent::CopilotCli => "copilot_cli",
+        dkod_core::Agent::GeminiCli => "gemini_cli",
     };
     println!("session {}", s.id);
     println!("agent   {}", agent);
