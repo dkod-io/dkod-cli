@@ -19,7 +19,7 @@ enum Cmd {
     Init,
     /// Capture a session by wrapping an agent invocation
     Capture {
-        /// Agent name (e.g. "codex", "claude-code")
+        /// Agent name (e.g. "codex", "claude-code", "copilot-cli", "gemini-cli")
         agent: String,
         /// Args forwarded to the agent (after `--`)
         #[arg(last = true)]
