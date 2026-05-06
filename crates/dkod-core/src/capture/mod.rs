@@ -10,5 +10,6 @@ pub mod codex;
 pub mod copilot_cli;
 pub mod cursor;
 pub mod gemini_cli;
+pub mod opencode;
 pub(crate) mod timestamp;
 pub(crate) mod worktree_diff;
