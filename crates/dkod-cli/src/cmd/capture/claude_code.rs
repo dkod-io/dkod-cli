@@ -630,7 +630,7 @@ fn lazy_spawn_server(input: &Value, repo_hash: &str) -> Result<()> {
     let stderr_file = log_file.try_clone().context("clone log fd")?;
 
     Command::new(exe)
-        .args(["capture", "claude-code", "--detached"])
+        .args(["capture", "claude-code", "--", "--detached"])
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log_file))
