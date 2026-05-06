@@ -26,6 +26,7 @@ pub enum Agent {
     CopilotCli,
     Cursor,
     GeminiCli,
+    OpenCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

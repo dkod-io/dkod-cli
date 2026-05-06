@@ -1,0 +1,55 @@
+{
+  "session_id": "sess_abc123",
+  "messages": [
+    {
+      "id": "msg_001",
+      "role": "user",
+      "parts": [{"type": "text", "text": "add a hello world endpoint"}],
+      "created_at": "2026-05-06T10:00:00Z"
+    },
+    {
+      "id": "msg_002",
+      "role": "assistant",
+      "parts": [{"type": "text", "text": "I'll add a hello world endpoint to main.go."}],
+      "created_at": "2026-05-06T10:00:05Z"
+    },
+    {
+      "id": "msg_003",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_use",
+          "tool_use": {
+            "id": "tool_001",
+            "name": "write_file",
+            "input": {"path": "main.go", "content": "package main\n\nfunc main() {}"}
+          }
+        }
+      ],
+      "created_at": "2026-05-06T10:00:08Z"
+    },
+    {
+      "id": "msg_004",
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_result",
+          "tool_result": {
+            "id": "tool_001",
+            "output": "File written successfully"
+          }
+        }
+      ],
+      "created_at": "2026-05-06T10:00:09Z"
+    },
+    {
+      "id": "msg_005",
+      "role": "assistant",
+      "parts": [
+        {"type": "thinking", "text": "The file has been created. Let me verify it compiles."},
+        {"type": "text", "text": "Done! The hello world endpoint is ready."}
+      ],
+      "created_at": "2026-05-06T10:00:12Z"
+    }
+  ]
+}

@@ -60,8 +60,9 @@ fn main() -> anyhow::Result<()> {
             "gemini-cli" | "gemini" => {
                 cmd::capture::gemini_cli::run(&std::env::current_dir()?, args)
             }
+            "opencode" => cmd::capture::opencode::run(&std::env::current_dir()?, args),
             other => Err(anyhow::anyhow!(
-                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, cursor/cursor-agent, gemini-cli/gemini)"
+                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, cursor/cursor-agent, gemini-cli/gemini, opencode)"
             )),
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
