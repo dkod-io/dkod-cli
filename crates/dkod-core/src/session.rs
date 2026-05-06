@@ -24,6 +24,7 @@ pub enum Agent {
     ClaudeCode,
     Codex,
     CopilotCli,
+    Cursor,
     GeminiCli,
 }
 

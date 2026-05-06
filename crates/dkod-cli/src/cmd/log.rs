@@ -22,6 +22,7 @@ pub fn run(cwd: &Path) -> Result<()> {
             dkod_core::Agent::ClaudeCode => "claude_code",
             dkod_core::Agent::Codex => "codex",
             dkod_core::Agent::CopilotCli => "copilot_cli",
+            dkod_core::Agent::Cursor => "cursor",
             dkod_core::Agent::GeminiCli => "gemini_cli",
         };
         println!("{}  {}  {}", s.id, agent, s.prompt_summary);
