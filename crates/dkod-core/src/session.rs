@@ -25,6 +25,7 @@ pub enum Agent {
     Codex,
     CopilotCli,
     Cursor,
+    FactoryAi,
     GeminiCli,
     OpenCode,
 }
@@ -74,6 +75,14 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factory_ai_agent_serializes_as_snake_case() {
+        let json = serde_json::to_string(&Agent::FactoryAi).unwrap();
+        assert_eq!(json, "\"factory_ai\"");
+        let back: Agent = serde_json::from_str("\"factory_ai\"").unwrap();
+        assert_eq!(back, Agent::FactoryAi);
+    }
 
     #[test]
     fn round_trips_through_json() {

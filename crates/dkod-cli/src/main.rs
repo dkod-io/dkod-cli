@@ -19,7 +19,7 @@ enum Cmd {
     Init,
     /// Capture a session by wrapping an agent invocation
     Capture {
-        /// Agent name (e.g. "codex", "claude-code", "copilot-cli", "gemini-cli")
+        /// Agent name (e.g. "codex", "claude-code", "copilot-cli", "gemini-cli", "factory-ai")
         agent: String,
         /// Args forwarded to the agent (after `--`)
         #[arg(last = true)]
@@ -57,12 +57,15 @@ fn main() -> anyhow::Result<()> {
             "cursor" | "cursor-agent" => {
                 cmd::capture::cursor::run(&std::env::current_dir()?, args)
             }
+            "factory-ai" | "factory" | "droid" => {
+                cmd::capture::factory_ai::run(&std::env::current_dir()?, args)
+            }
             "gemini-cli" | "gemini" => {
                 cmd::capture::gemini_cli::run(&std::env::current_dir()?, args)
             }
             "opencode" => cmd::capture::opencode::run(&std::env::current_dir()?, args),
             other => Err(anyhow::anyhow!(
-                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, cursor/cursor-agent, gemini-cli/gemini, opencode)"
+                "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, cursor/cursor-agent, factory-ai/factory/droid, gemini-cli/gemini, opencode)"
             )),
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
