@@ -1,0 +1,7 @@
+{"type":"system","timestamp":"2026-05-07T14:00:00.000Z","session_id":"droid-sess-001","model":"factory-v1","droid":"code"}
+{"type":"user","timestamp":"2026-05-07T14:00:01.000Z","message":{"content":[{"type":"text","text":"create a hello.txt file with 'hi from factory'"}]}}
+{"type":"thinking","timestamp":"2026-05-07T14:00:02.000Z","content":"I need to create a new file called hello.txt with the specified content."}
+{"type":"tool_use","timestamp":"2026-05-07T14:00:03.000Z","name":"write_file","id":"tool_f01","input":{"file_path":"hello.txt","content":"hi from factory"}}
+{"type":"tool_result","timestamp":"2026-05-07T14:00:04.000Z","tool_use_id":"tool_f01","content":"Created hello.txt"}
+{"type":"assistant","timestamp":"2026-05-07T14:00:05.000Z","message":{"content":[{"type":"text","text":"I created hello.txt with the content 'hi from factory'."}]}}
+{"type":"result","timestamp":"2026-05-07T14:00:06.000Z","status":"success","duration_ms":6000,"num_turns":1}

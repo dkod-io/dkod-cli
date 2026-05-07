@@ -25,6 +25,7 @@ pub enum Agent {
     Codex,
     CopilotCli,
     Cursor,
+    FactoryAi,
     GeminiCli,
     OpenCode,
 }

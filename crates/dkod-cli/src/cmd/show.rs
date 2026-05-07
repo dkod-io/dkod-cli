@@ -12,6 +12,7 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
         dkod_core::Agent::Codex => "codex",
         dkod_core::Agent::CopilotCli => "copilot_cli",
         dkod_core::Agent::Cursor => "cursor",
+        dkod_core::Agent::FactoryAi => "factory_ai",
         dkod_core::Agent::GeminiCli => "gemini_cli",
         dkod_core::Agent::OpenCode => "open_code",
     };
