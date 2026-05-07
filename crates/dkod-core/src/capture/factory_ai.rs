@@ -99,6 +99,12 @@ pub fn capture_factory_ai(opts: CaptureOptions) -> Result<Session> {
         }
     }
 
+    if events.is_empty() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow!("droid produced no output events"));
+    }
+
     let status = child.wait().context("wait for droid child")?;
     let duration_ms = spawn_instant
         .elapsed()

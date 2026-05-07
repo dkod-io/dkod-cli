@@ -7,6 +7,7 @@ pub fn run(cwd: &Path, args: Vec<String>) -> Result<()> {
     let cfg = super::super::load_config(cwd)?;
 
     let factory_bin: PathBuf = std::env::var_os("DKOD_FACTORY_BIN")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("droid"));
 

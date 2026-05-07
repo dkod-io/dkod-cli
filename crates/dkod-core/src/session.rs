@@ -77,6 +77,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn factory_ai_agent_serializes_as_snake_case() {
+        let json = serde_json::to_string(&Agent::FactoryAi).unwrap();
+        assert_eq!(json, "\"factory_ai\"");
+        let back: Agent = serde_json::from_str("\"factory_ai\"").unwrap();
+        assert_eq!(back, Agent::FactoryAi);
+    }
+
+    #[test]
     fn round_trips_through_json() {
         let s = Session {
             id: "0192f8e2-7b3a-7000-8a3e-000000000001".into(),
