@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
-
-mod cmd;
+use dkod_cli::cmd;
 
 #[derive(Parser)]
 #[command(

@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod init;
 pub mod log;
+pub mod setup;
 pub mod show;
 
 use anyhow::{Context, Result};
