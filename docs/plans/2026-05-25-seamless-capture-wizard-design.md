@@ -151,18 +151,23 @@ No new dependencies. Reuses `gix`, `serde`, `toml`, `clap`, `dirs`, `sha2`.
 
 ## Per-agent strategy matrix
 
-Confidence varies — rows marked "spike" need a short verification before
-implementation.
+Confirmed via Wave 0 spikes (`docs/plans/spikes/`). Six of seven agents support
+hooks natively; only Codex still requires a PATH shim.
 
-| Agent | Native API | Install method | Consent | Confidence |
+| Agent | Native API | Install method | Consent | Spike |
 |---|---|---|---|---|
-| Claude Code | `hooks` in `~/.claude/settings.json` (user) or `.claude/settings.local.json` (repo) | Write `SessionStart`/`Stop`/etc. pointing at `dkod capture-hook --agent claude-code` | Silent | High |
-| OpenCode | `opencode.json` `hooks` block | Same pattern | Silent | Medium |
-| Copilot CLI | `.copilot/config.yml` (verify) | Hook if supported, else shim | Silent / Explicit | Spike |
-| Codex (OpenAI) | None | PATH shim `~/.dkod/bin/codex` → `dkod capture codex --` | Explicit | High |
-| Cursor CLI | None | PATH shim | Explicit | Medium |
-| Gemini CLI | Unclear | Hook if present, else shim | Silent / Explicit | Spike |
-| Factory AI (Droid) | Unclear | Shim by default | Explicit | Spike |
+| Claude Code | `hooks` in `~/.claude/settings.json` (user) or `.claude/settings.local.json` (repo) | Write `SessionStart`/`Stop`/etc. pointing at `dkod capture-hook --agent claude-code`. Existing code reused from `cmd/capture/claude_code.rs::install_hooks_at_init` | Silent | n/a (existing) |
+| OpenCode | `opencode.json` `hooks` block | Write `SessionStart`/`SessionEnd` entries pointing at `dkod capture-hook --agent opencode` | Silent | n/a |
+| Copilot CLI | JSON v1 hooks at `~/.copilot/hooks/*.json` (honors `$COPILOT_HOME`) or `.github/hooks/*.json` | Write `~/.copilot/hooks/dkod-capture.json` registering `sessionEnd` + `agentStop` invoking `dkod capture-hook --agent copilot-cli` with `timeoutSec: 5` | Silent | `copilot-cli-hooks.md` |
+| Codex (OpenAI) | None | PATH shim `~/.dkod/bin/codex` → `dkod capture codex --` | **Explicit** | n/a |
+| Cursor CLI | Partial — `.cursor/hooks.json` with reliable `afterShellExecution`, `afterMCPExecution`, `afterFileEdit` (5 events fire today; lifecycle events not yet wired in `cursor-agent`) | Write `~/.cursor/hooks.json` wiring the 3 working `after*` events to `dkod capture-hook --agent cursor`; derive session boundaries from `conversation_id` + inactivity timeout | Silent (partial) | `cursor-cli-hooks.md` |
+| Gemini CLI | `hooks` block in `~/.gemini/settings.json` (user) or `.gemini/settings.json` (repo); default-on since v0.26.0 | Write `SessionStart` + `SessionEnd` entries pointing at `dkod capture-hook --agent gemini-cli`; payload arrives via env (`GEMINI_SESSION_ID`, `GEMINI_CWD`, `GEMINI_PROJECT_DIR`) + stdin JSON | Silent | `gemini-cli-hooks.md` |
+| Factory AI (Droid) | Claude-Code-style hooks at `~/.factory/settings.json` and `<project>/.factory/settings.json`; stdin carries `session_id`, `transcript_path`, `cwd`, `hook_event_name` | Additively merge `SessionEnd` hook calling `dkod capture-hook --agent factory-ai` (reads `transcript_path` from stdin and ingests the NDJSON our existing `parse_events` already consumes) | Silent | `factory-ai-hooks.md` |
+
+**Net effect on the wizard UX:** on a clean machine with all seven agents
+installed, the wizard installs six silent hook configs and asks one consent
+question (for the Codex PATH shim). On most users' machines, zero consent
+prompts will appear.
 
 **Shim mechanics** (explicit-consent rows):
 
