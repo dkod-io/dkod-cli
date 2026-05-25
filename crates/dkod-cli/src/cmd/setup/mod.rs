@@ -5,6 +5,7 @@
 //! orchestration, per-agent installers, and the CLI subcommand wiring land
 //! in later waves.
 
+pub mod agents;
 pub mod consent;
 pub mod selfheal;
 pub mod state;
