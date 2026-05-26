@@ -26,7 +26,13 @@ const DKOD_SENTINEL_KEY: &str = "_dkod";
 /// Hook events we listen for. The order is significant for the install /
 /// uninstall round-trip: keep stable so diffs against
 /// `.claude/settings.local.json` stay clean.
-const HOOK_EVENTS: &[(&str, u32)] = &[
+///
+/// PUBLIC so the seamless-capture wizard's user-scope installer
+/// (`cmd::setup::agents::claude_code`) registers the exact same set in
+/// `~/.claude/settings.json`. Letting the two installers diverge means
+/// user-scope and per-repo captures see different events, which is a
+/// nasty trap to debug.
+pub const HOOK_EVENTS: &[(&str, u32)] = &[
     ("SessionStart", 1),
     ("UserPromptSubmit", 1),
     ("PreToolUse", 1),

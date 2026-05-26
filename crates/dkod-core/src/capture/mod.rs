@@ -12,5 +12,6 @@ pub mod cursor;
 pub mod factory_ai;
 pub mod gemini_cli;
 pub mod opencode;
+pub mod route;
 pub(crate) mod timestamp;
 pub(crate) mod worktree_diff;
