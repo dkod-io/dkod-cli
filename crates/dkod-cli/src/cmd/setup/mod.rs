@@ -15,6 +15,7 @@
 
 pub mod agents;
 pub mod consent;
+pub mod orchestrator;
 pub mod selfheal;
 pub mod state;
 pub mod vault;

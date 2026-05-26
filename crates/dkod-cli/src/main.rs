@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use dkod_cli::cmd;
 
 #[derive(Parser)]
@@ -10,6 +10,23 @@ use dkod_cli::cmd;
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// CLI-side mirror of `setup::state::Scope`. Kept separate so clap's
+/// `ValueEnum` derive doesn't leak into the state module.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ScopeArg {
+    User,
+    PerRepo,
+}
+
+impl From<ScopeArg> for cmd::setup::state::Scope {
+    fn from(s: ScopeArg) -> Self {
+        match s {
+            ScopeArg::User => cmd::setup::state::Scope::User,
+            ScopeArg::PerRepo => cmd::setup::state::Scope::PerRepo,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -30,6 +47,23 @@ enum Cmd {
     Show {
         /// Session id to display
         id: String,
+    },
+    /// Run the seamless capture wizard: detect installed AI agents and
+    /// wire their hook config / PATH shim so dkod captures every session
+    /// automatically. Re-run any time to refresh hooks; idempotent.
+    Setup {
+        /// Wizard scope: "user" writes to `~/.<agent>/...`; "per-repo"
+        /// writes to `<repo>/.<agent>/...`. Defaults to "user".
+        #[arg(long, value_enum, default_value_t = ScopeArg::User)]
+        scope: ScopeArg,
+        /// Skip every consent prompt (record `consent = skipped-noninteractive`
+        /// for shim agents). Implied when stdin isn't a TTY.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Repo root for `--scope per-repo`. Ignored under user scope;
+        /// defaults to the current working directory.
+        #[arg(long)]
+        repo_root: Option<std::path::PathBuf>,
     },
     /// Internal: invoked by agent hooks. Not for direct use.
     ///
@@ -58,6 +92,11 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    // Self-heal runs on every dispatch except `Setup` itself (chicken-and-egg)
+    // and `CaptureHook` (must stay sub-50µs and never block the agent).
+    if !matches!(cli.cmd, Cmd::Setup { .. } | Cmd::CaptureHook { .. }) {
+        maybe_warn_drift();
+    }
     match cli.cmd {
         Cmd::Init => cmd::init::run(&std::env::current_dir()?),
         Cmd::Capture { agent, args } => match agent.as_str() {
@@ -84,6 +123,15 @@ fn main() -> anyhow::Result<()> {
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
+        Cmd::Setup {
+            scope,
+            non_interactive,
+            repo_root,
+        } => cmd::setup::orchestrator::run_cli(
+            scope.into(),
+            non_interactive,
+            repo_root.as_deref(),
+        ),
         Cmd::CaptureHook {
             agent,
             event,
@@ -96,5 +144,37 @@ fn main() -> anyhow::Result<()> {
             // Misuse: log + exit 0 so the hook never breaks the agent.
             _ => Ok(()),
         },
+    }
+}
+
+/// Best-effort drift warning. Stats a fixed list of well-known agent
+/// config paths against `~/.dkod/config.toml` and prints a one-line
+/// notice on stderr if any agent appeared or disappeared. Cheap by
+/// construction (~20 `Path::exists` calls + one small TOML parse on a
+/// cold start, less on a warm cache), but no formal latency guarantee —
+/// any error is swallowed so a `dkod log` is never blocked by unreadable
+/// state.
+fn maybe_warn_drift() {
+    use cmd::setup::{
+        selfheal::{ensure_setup_current, SelfHealResult},
+        state::DkodConfig,
+    };
+    let config_path = match DkodConfig::default_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let cfg = match DkodConfig::load_or_default(&config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
+    if let SelfHealResult::DriftDetected(agents) = ensure_setup_current(&cfg, &home) {
+        eprintln!(
+            "dkod: agent state has drifted ({}) — run `dkod setup` to refresh hooks",
+            agents.join(", ")
+        );
     }
 }
