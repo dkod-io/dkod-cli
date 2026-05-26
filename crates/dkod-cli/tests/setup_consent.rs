@@ -4,14 +4,33 @@ use dkod_cli::cmd::setup::consent::{ask_via_reader, NonInteractivePrompter, Prom
 use std::io::Cursor;
 
 #[test]
-fn non_interactive_returns_default_regardless_of_input() {
+fn non_interactive_returns_default_when_default_is_a_valid_choice() {
     let mut prompter = NonInteractivePrompter::new("y");
-    let answer = prompter.ask("install shim?", &["y", "n", "never"]).unwrap();
+    let answer = prompter
+        .ask("install shim?", &["y", "n", "never"])
+        .unwrap();
     assert_eq!(answer, "y");
 
-    // Same default, different question — still returns the same default.
-    let answer = prompter.ask("anything else?", &["a", "b"]).unwrap();
+    // Same default, a different question whose choice set still
+    // includes the default. The prompter MUST keep returning it.
+    let answer = prompter.ask("install elsewhere?", &["y", "n"]).unwrap();
     assert_eq!(answer, "y");
+}
+
+#[test]
+fn non_interactive_errors_when_default_is_not_in_choices() {
+    // Silently returning an unknown value would let a misconfigured
+    // caller drive install-state transitions the prompt never offered;
+    // we want a loud error instead.
+    let mut prompter = NonInteractivePrompter::new("y");
+    let err = prompter
+        .ask("pick one", &["a", "b"])
+        .expect_err("default 'y' is not in {a,b}; should error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("not in allowed choices"),
+        "unexpected error message: {msg}"
+    );
 }
 
 #[test]

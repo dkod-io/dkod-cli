@@ -811,7 +811,7 @@ git commit -m "refactor: remove push webhook handler — reconciler is sole inge
 
 Currently `GET /auth/github/login` is hardcoded. Add:
 
-```
+```text
 GET /auth/login/:platform  → generate CSRF state, redirect to platform's OAuth
 ```
 
@@ -821,7 +821,7 @@ The redirect URI includes the platform: `/auth/callback/{platform}`.
 
 **Step 2: Add platform-parameterized callback route**
 
-```
+```text
 GET /auth/callback/:platform → verify state, exchange code, fetch user, persist, issue JWT
 ```
 
@@ -1110,7 +1110,7 @@ git commit -m "feat: wire Gitea provider into registry (optional)"
 
 **Step 1: Implement endpoints**
 
-```
+```text
 POST   /api/connections              — create a connection (platform, base_url, service_token, label)
 GET    /api/connections              — list connections for user's org
 DELETE /api/connections/:id          — delete a connection (CASCADE repos)

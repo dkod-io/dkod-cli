@@ -53,7 +53,7 @@ These were made during brainstorming and shape the design.
 
 ## Architecture
 
-```
+```text
                     ┌─────────────────────────────────────────────┐
                     │  curl -fsSL https://dkod.io/install.sh | sh │
                     └────────────────────┬────────────────────────┘
@@ -100,7 +100,7 @@ Three entry points, one code path: `install.sh`, `dkod setup`, and the
 
 New module: `crates/dkod-cli/src/cmd/setup/`
 
-```
+```text
 setup/
 ├── mod.rs              # `dkod setup` subcommand entry, orchestrator
 ├── detect.rs           # per-agent presence/version detection
@@ -171,9 +171,9 @@ prompts will appear.
 
 **Shim mechanics** (explicit-consent rows):
 
-1. Wizard prompts: "Cursor doesn't support hooks. Install a PATH shim at
-   `~/.dkod/bin/cursor` and add it to your shell? [y/N/never]"
-2. On `y`: write a 3-line shim that `exec`s `dkod capture cursor -- "$@"`,
+1. Wizard prompts: "Codex doesn't support hooks. Install a PATH shim at
+   `~/.dkod/bin/codex` and add it to your shell? [y/N/never]"
+2. On `y`: write a 3-line shim that `exec`s `dkod capture codex -- "$@"`,
    append one managed block to existing rc files:
 
    ```sh

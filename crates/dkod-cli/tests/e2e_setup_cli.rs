@@ -20,6 +20,25 @@ fn touch(path: &std::path::Path) {
     std::fs::write(path, "{}").unwrap();
 }
 
+/// Initialise `repo` as a git working tree, panicking with the captured
+/// stderr if `git init` fails (otherwise downstream assertions would
+/// fail in confusing ways — a tempdir without `.git` looks identical to
+/// a broken test setup).
+fn git_init(repo: &std::path::Path) {
+    let out = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(repo)
+        .output()
+        .expect("invoke git");
+    assert!(
+        out.status.success(),
+        "git init failed in {}: stdout={:?} stderr={:?}",
+        repo.display(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[test]
 fn setup_in_empty_home_writes_config_and_vault() {
     let home = TempDir::new().unwrap();
@@ -142,11 +161,7 @@ installed = true
 
     // Need a git repo for `dkod log` to succeed; use a tempdir.
     let repo = TempDir::new().unwrap();
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(repo.path())
-        .output()
-        .unwrap();
+    git_init(repo.path());
 
     let out = dkod_bin()
         .env("HOME", home.path())
@@ -166,11 +181,7 @@ fn dkod_init_hints_at_setup_when_wizard_has_never_run() {
     // Fresh tempdir HOME (no ~/.dkod/config.toml) + fresh git repo.
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(repo.path())
-        .output()
-        .unwrap();
+    git_init(repo.path());
 
     let out = dkod_bin()
         .env("HOME", home.path())
@@ -194,11 +205,7 @@ fn dkod_init_stays_quiet_when_wizard_has_run() {
     std::fs::write(dkod_dir.join("config.toml"), "schema_version = 1\n").unwrap();
 
     let repo = TempDir::new().unwrap();
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(repo.path())
-        .output()
-        .unwrap();
+    git_init(repo.path());
 
     let out = dkod_bin()
         .env("HOME", home.path())

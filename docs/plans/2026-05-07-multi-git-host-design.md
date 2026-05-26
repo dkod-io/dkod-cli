@@ -147,7 +147,7 @@ platform-specific config (GitHub App PEM, OAuth credentials, etc.).
 
 ## Workspace layout
 
-```
+```text
 crates/
   indexer-provider/          — trait defs, shared types, Platform enum, git ls-remote helper
   indexer-provider-github/   — renamed from indexer-github, implements traits
@@ -166,7 +166,7 @@ varies wildly and some platforms don't expose custom refs via their API), we
 use `git ls-remote` over HTTPS for all platforms. The git smart HTTP protocol
 is the one thing every git host supports identically.
 
-```
+```sh
 git ls-remote --refs https://{auth}@{host}/{owner}/{repo}.git refs/dkod/*
 ```
 
@@ -274,7 +274,7 @@ Webhook handler simplified: keep `installation`, `installation_repositories`,
 
 ### Connection management API
 
-```
+```text
 POST   /api/connections                       — create connection
 GET    /api/connections                       — list connections
 DELETE /api/connections/:id                   — remove connection
@@ -286,7 +286,7 @@ GET    /api/connections/:id/available-repos    — list repos for picker
 
 ## Auth routing
 
-```
+```text
 GET /auth/login/github    → github.com OAuth
 GET /auth/login/gitlab    → gitlab.com OAuth
 GET /auth/login/gitea     → {instance} OAuth

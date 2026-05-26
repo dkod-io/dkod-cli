@@ -58,8 +58,23 @@ impl NonInteractivePrompter {
 }
 
 impl Prompter for NonInteractivePrompter {
-    fn ask(&mut self, _question: &str, _choices: &[&str]) -> Result<String> {
-        Ok(self.default.clone())
+    fn ask(&mut self, _question: &str, choices: &[&str]) -> Result<String> {
+        // Default must be a valid choice — silently returning an
+        // unrecognised value would let a misconfigured caller drive
+        // install-state transitions the prompt never offered. Match
+        // case-insensitively so callers can configure `"y"` while the
+        // installer accepts `"Y"` / `"yes"` etc.
+        if let Some(choice) = choices
+            .iter()
+            .find(|c| c.eq_ignore_ascii_case(self.default.as_str()))
+        {
+            return Ok((*choice).to_string());
+        }
+        Err(anyhow!(
+            "non-interactive default {:?} is not in allowed choices: {}",
+            self.default,
+            choices.join(", ")
+        ))
     }
 }
 

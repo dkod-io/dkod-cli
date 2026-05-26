@@ -297,7 +297,7 @@ Two tasks per agent, both run in parallel across agents. Skip rows the spikes ma
 - Modify: `crates/dkod-cli/src/main.rs` (dispatch + call `selfheal::ensure_setup_current()` at the top of every subcommand other than `setup`)
 
 **Clap surface:**
-```
+```text
 dkod setup [--non-interactive] [--scope user|per-repo] [--reconcile] [--uninstall]
 ```
 
