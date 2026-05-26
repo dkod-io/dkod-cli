@@ -70,8 +70,7 @@ code+config commits (common), still run it.
 - **Install path test (private repo):** the install.sh script reads `$GH_TOKEN`. For testing locally, store the token in a 600-mode file (e.g. `/tmp/test-pat`) and pass via `GH_TOKEN=$(cat /tmp/test-pat)`. Never paste tokens in chat.
 - **Releases:** `git tag -a v<x.y.z> -m "..."; git push origin v<x.y.z>` triggers `release.yml`. Default `prerelease: false`. Promotion via `gh release edit` is no longer required.
 
-## Open follow-up issues (V1.5)
+## Follow-up issues
 
-- #4 — Bump GitHub Actions to Node 24 before 2026-09-16
-- #5 — `dkod init` should write `refs/dkod/*` fetch refspec to `.git/config`
-- #6 — Always-on Claude Code capture (lazy-spawn server from hook)
+(Issues #4, #5, #6 were closed pre-merge of the seamless-capture-wizard
+PR #18. Check the GitHub issue tracker for the current open set.)
