@@ -283,6 +283,34 @@ INSTALL_PATH="$PREFIX/dkod"
 mv "$TMPDIR_INSTALL/dkod" "$INSTALL_PATH"
 chmod +x "$INSTALL_PATH"
 
+# --- Seamless capture wizard -------------------------------------------------
+#
+# Detect installed AI agents (Claude Code, Codex, Cursor, Copilot CLI,
+# Gemini CLI, Factory AI, OpenCode) and wire each one's hook config (or
+# PATH shim, for Codex) so dkod captures every session automatically.
+# Idempotent: re-running install.sh — or running `dkod setup` manually —
+# refreshes hooks without duplicating sentinel entries.
+#
+# Skip with DKOD_SKIP_SETUP=1 (e.g. for CI / packaging pipelines that
+# don't want to touch the user's agent configs).
+
+if [ -n "${DKOD_SKIP_SETUP:-}" ]; then
+    log "DKOD_SKIP_SETUP set; skipping seamless-capture wizard"
+else
+    log "running seamless-capture wizard..."
+    # --non-interactive is implied (install.sh is piped from curl, so
+    # stdin isn't a TTY anyway), but pass the flag explicitly so the
+    # subprocess records every consent-required agent as
+    # "skipped-noninteractive" deterministically. Users can re-run
+    # `dkod setup` later in a real terminal to grant explicit consent
+    # for the Codex PATH shim.
+    if "$INSTALL_PATH" setup --non-interactive; then
+        log "wizard complete"
+    else
+        log "warning: wizard exited non-zero; run \`dkod setup\` manually"
+    fi
+fi
+
 # --- Done --------------------------------------------------------------------
 
 cat <<EOF
@@ -292,4 +320,5 @@ Make sure $PREFIX is on your PATH:
   export PATH="$PREFIX:\$PATH"
 
 Try:  dkod --help
+Or:   dkod setup           # re-run the seamless capture wizard interactively
 EOF

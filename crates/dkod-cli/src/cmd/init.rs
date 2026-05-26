@@ -31,6 +31,11 @@ pub fn run(cwd: &Path) -> Result<()> {
     // load_config performs the custom-regex validation step.
     let _cfg = super::load_config(cwd)?;
 
+    // Suggest the seamless-capture wizard the first time `dkod init` is
+    // run on a machine. Only printed once — once the wizard has written
+    // ~/.dkod/config.toml, we stay quiet to avoid nagging.
+    maybe_suggest_setup_wizard();
+
     // 3. Wire `refs/dkod/*` into each configured remote's fetch refspec
     //    so a vanilla `git fetch origin` pulls session refs alongside
     //    the usual heads. Idempotent: re-running `dkod init` after
@@ -61,6 +66,23 @@ pub fn run(cwd: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// One-time hint nudging the user toward `dkod setup` if the seamless
+/// capture wizard hasn't been run on this machine yet. Detection is a
+/// single `Path::exists` so it doesn't slow `dkod init` down.
+fn maybe_suggest_setup_wizard() {
+    let cfg_path = match super::setup::state::DkodConfig::default_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if cfg_path.exists() {
+        return;
+    }
+    eprintln!(
+        "dkod init: tip — run `dkod setup` once to wire hooks for every AI agent \
+         on this machine (capture works across all your repos, not just this one)."
+    );
 }
 
 /// For every remote configured in `cwd`'s `.git/config`, append the
