@@ -21,7 +21,7 @@ impl AgentInstaller for Cursor {
             let p = home.join(candidate);
             if p.exists() {
                 return Some(DetectedAgent {
-                    name: "cursor",
+                    name: self.name(),
                     config_path: p,
                     version: None,
                 });

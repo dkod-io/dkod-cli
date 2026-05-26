@@ -92,8 +92,10 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    // Self-heal runs on every dispatch except `Setup` itself (chicken-and-egg)
-    // and `CaptureHook` (must stay sub-50µs and never block the agent).
+    // Self-heal runs on every dispatch except `Setup` itself
+    // (chicken-and-egg) and `CaptureHook` (must stay on its own fast
+    // path — the hook is hot-spot code that fires once per tool use,
+    // and even a single TOML parse on top adds avoidable latency).
     if !matches!(cli.cmd, Cmd::Setup { .. } | Cmd::CaptureHook { .. }) {
         maybe_warn_drift();
     }

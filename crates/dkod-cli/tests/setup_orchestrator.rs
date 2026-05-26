@@ -231,8 +231,11 @@ fn rerunning_is_idempotent() {
         let _ = run(opts).unwrap();
     }
 
-    // 6 dkod hook entries (one per event the installer registers).
-    assert_eq!(dkod_count_in_settings(home.path()), 6);
+    // One dkod entry per shared HOOK_EVENTS entry (consolidated source
+    // of truth in cmd::capture::claude_code). Don't hardcode the count
+    // here; future event additions stay honest without touching this test.
+    let expected = dkod_cli::cmd::capture::claude_code::HOOK_EVENTS.len();
+    assert_eq!(dkod_count_in_settings(home.path()), expected);
 }
 
 #[test]

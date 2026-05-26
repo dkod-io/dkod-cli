@@ -20,7 +20,7 @@ impl AgentInstaller for OpenCode {
             let p = home.join(candidate);
             if p.exists() {
                 return Some(DetectedAgent {
-                    name: "opencode",
+                    name: self.name(),
                     config_path: p,
                     version: None,
                 });

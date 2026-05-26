@@ -26,7 +26,7 @@ impl AgentInstaller for CopilotCli {
             let p = home.join(candidate);
             if p.exists() {
                 return Some(DetectedAgent {
-                    name: "copilot-cli",
+                    name: self.name(),
                     config_path: p,
                     version: None,
                 });

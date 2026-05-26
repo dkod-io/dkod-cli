@@ -103,11 +103,16 @@ fn claude_code_install_is_idempotent() {
     let body = std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
     // Exactly one entry per event in the dkod sentinel set — re-running
     // must not duplicate entries.
-    let session_start_dkod_entries = body.matches("\"_dkod\": true").count();
-    // 6 events configured in dkod_hook_events.
+    let dkod_entries = body.matches("\"_dkod\": true").count();
+    // Per-repo and user-scope installers share the same HOOK_EVENTS list
+    // (one event per array entry). Don't hardcode the count here; pull
+    // it from the shared list so future event additions keep this test
+    // honest without manual bumps.
+    let expected = dkod_cli::cmd::capture::claude_code::HOOK_EVENTS.len();
     assert_eq!(
-        session_start_dkod_entries, 6,
-        "expected exactly 6 dkod entries (one per event), got {session_start_dkod_entries} in:\n{body}"
+        dkod_entries, expected,
+        "expected exactly {expected} dkod entries (one per shared HOOK_EVENTS entry), \
+         got {dkod_entries} in:\n{body}"
     );
 }
 
@@ -196,9 +201,10 @@ fn codex_install_respects_previous_never_without_prompting() {
     let mut state = empty_agent_state();
     state.consent = Some(Consent::Never);
 
-    // PanickyPrompter would explode if asked — use one that returns
-    // garbage so we can still construct the ctx, but the install path
-    // must short-circuit before consulting it.
+    // The install path must short-circuit before consulting the prompter
+    // when stored consent is already `Never`. Use a prompter that would
+    // return "y" if asked — the test passing despite that proves the
+    // installer never reaches it.
     let mut prompter = NonInteractivePrompter::new("y");
     let mut ctx = InstallContext {
         home: home.path(),

@@ -20,7 +20,7 @@ impl AgentInstaller for GeminiCli {
             let p = home.join(candidate);
             if p.exists() {
                 return Some(DetectedAgent {
-                    name: "gemini-cli",
+                    name: self.name(),
                     config_path: p,
                     version: None,
                 });

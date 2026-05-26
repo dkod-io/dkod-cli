@@ -68,6 +68,15 @@ pub struct Options<'a> {
 }
 
 impl Default for Options<'_> {
+    /// Convenience constructor for callers that just want the typical
+    /// "live CLI" defaults. `home` falls back to `dirs::home_dir()` →
+    /// `$HOME` → the current directory. The current-directory fallback is
+    /// intentionally noisy: every realistic CLI invocation has *some*
+    /// home, so reaching the fallback means something is badly wrong
+    /// with the environment and writing config to `cwd` would silently
+    /// surprise the user. `run_cli` consequently re-resolves `home`
+    /// itself via [`Context`] and errors out properly; tests should
+    /// always set `home` explicitly via `Options { home: ..., ..Default::default() }`.
     fn default() -> Self {
         Self {
             home: dirs::home_dir()

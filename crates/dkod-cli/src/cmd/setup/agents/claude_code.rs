@@ -29,7 +29,7 @@ impl AgentInstaller for ClaudeCode {
         let user_settings = home.join(".claude/settings.json");
         if user_settings.exists() {
             return Some(DetectedAgent {
-                name: "claude-code",
+                name: self.name(),
                 config_path: user_settings,
                 version: None,
             });
@@ -37,7 +37,7 @@ impl AgentInstaller for ClaudeCode {
         let claude_dir = home.join(".claude");
         if claude_dir.exists() {
             return Some(DetectedAgent {
-                name: "claude-code",
+                name: self.name(),
                 config_path: claude_dir,
                 version: None,
             });
@@ -176,17 +176,11 @@ fn tmp_sibling(path: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Hook events dkod installs at the user scope. Keep the order stable so
-/// diffs against `~/.claude/settings.json` stay clean. Mirrors the per-repo
-/// list in `cmd::capture::claude_code` but parameterised so future events
-/// can be added in one place.
+/// Hook events dkod installs at the user scope. Single source of truth
+/// lives in [`crate::cmd::capture::claude_code::HOOK_EVENTS`] — the
+/// per-repo installer (`dkod init`) and the user-scope installer (this
+/// module) MUST agree on the set, or one scope sees events the other
+/// drops. Re-export rather than duplicate.
 fn dkod_hook_events() -> &'static [(&'static str, u32)] {
-    &[
-        ("SessionStart", 1),
-        ("UserPromptSubmit", 1),
-        ("PreToolUse", 1),
-        ("PostToolUse", 1),
-        ("Stop", 1),
-        ("SessionEnd", 2),
-    ]
+    crate::cmd::capture::claude_code::HOOK_EVENTS
 }

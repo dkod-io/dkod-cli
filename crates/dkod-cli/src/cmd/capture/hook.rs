@@ -208,15 +208,55 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Append an error line to a per-user hook log. We deliberately write under
+/// `$HOME/.local/share/dkod/` (mode 0700 when we create it) instead of `/tmp`
+/// — error messages may include path context that should not be readable by
+/// other users on a shared host. Falls back to `/tmp` only when `HOME` is
+/// unset, and uses 0600 perms on the file itself.
 fn log_error(agent: &str, msg: &str) {
-    let path = format!("/tmp/dkod-hook-{agent}.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
+    let path = log_path_for(agent);
+    if let Some(parent) = path.parent() {
+        // Create the log directory with 0700 in a single syscall via
+        // DirBuilder. The naive create_dir_all + set_permissions sequence
+        // has a TOCTOU window where the dir briefly exists with the
+        // process umask before we tighten it — small but real on a shared
+        // host. Silently fail if creation doesn't work; the user is the
+        // only consumer of this log and breaking a hook is worse than
+        // missing a log line.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            let _ = builder.create(parent);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_CREAT + mode 0600 on the file itself so a freshly-created log
+        // isn't world-readable even if the parent dir somehow ends up loose.
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&path) {
         let _ = writeln!(f, "{} {}", now_iso8601(), msg);
     }
+}
+
+fn log_path_for(agent: &str) -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        let mut p = std::path::PathBuf::from(home);
+        p.push(".local/share/dkod");
+        p.push(format!("hook-{agent}.log"));
+        return p;
+    }
+    std::path::PathBuf::from(format!("/tmp/dkod-hook-{agent}.log"))
 }
 
 /// Visible for tests so they can call the routing function without going

@@ -20,7 +20,7 @@ impl AgentInstaller for FactoryAi {
             let p = home.join(candidate);
             if p.exists() {
                 return Some(DetectedAgent {
-                    name: "factory-ai",
+                    name: self.name(),
                     config_path: p,
                     version: None,
                 });

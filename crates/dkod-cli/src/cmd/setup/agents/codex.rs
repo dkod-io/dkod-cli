@@ -28,7 +28,7 @@ impl AgentInstaller for Codex {
         let cfg = home.join(".codex/config.toml");
         if cfg.exists() {
             return Some(DetectedAgent {
-                name: "codex",
+                name: self.name(),
                 config_path: cfg,
                 version: None,
             });
@@ -36,7 +36,7 @@ impl AgentInstaller for Codex {
         let dir = home.join(".codex");
         if dir.exists() {
             return Some(DetectedAgent {
-                name: "codex",
+                name: self.name(),
                 config_path: dir,
                 version: None,
             });
