@@ -6,9 +6,7 @@ use std::io::Cursor;
 #[test]
 fn non_interactive_returns_default_when_default_is_a_valid_choice() {
     let mut prompter = NonInteractivePrompter::new("y");
-    let answer = prompter
-        .ask("install shim?", &["y", "n", "never"])
-        .unwrap();
+    let answer = prompter.ask("install shim?", &["y", "n", "never"]).unwrap();
     assert_eq!(answer, "y");
 
     // Same default, a different question whose choice set still
