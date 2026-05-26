@@ -31,13 +31,28 @@ enum Cmd {
         /// Session id to display
         id: String,
     },
-    /// Internal: invoked by Claude Code hooks. Not for direct use.
+    /// Internal: invoked by agent hooks. Not for direct use.
+    ///
+    /// Two forms are accepted:
+    ///
+    /// * Legacy (Claude Code per-repo install written by `dkod init`):
+    ///   `dkod capture-hook <repo_hash> <event_name>`
+    /// * Wizard (seamless user-scope install):
+    ///   `dkod capture-hook --agent <name> --event <event>`
+    ///
+    /// Both are supported because in-flight installs at upgrade time may
+    /// have written either format.
     #[command(hide = true)]
     CaptureHook {
-        /// Repo hash that selects the per-repo socket.
-        repo_hash: String,
-        /// Hook event name (e.g. "SessionStart", "PreToolUse").
-        event_name: String,
+        /// Agent name (e.g. "claude-code", "codex"). Use with `--event`.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Hook event name (e.g. "SessionStart"). Use with `--agent`.
+        #[arg(long)]
+        event: Option<String>,
+        /// Legacy positional repo hash + event name. Mutually exclusive
+        /// with `--agent`/`--event`; presence is detected at runtime.
+        legacy_args: Vec<String>,
     },
 }
 
@@ -70,8 +85,16 @@ fn main() -> anyhow::Result<()> {
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
         Cmd::CaptureHook {
-            repo_hash,
-            event_name,
-        } => cmd::capture::claude_code::hook_command(&repo_hash, &event_name),
+            agent,
+            event,
+            legacy_args,
+        } => match (agent, event, legacy_args.as_slice()) {
+            (Some(agent), Some(event), []) => cmd::capture::hook::route_and_buffer(&agent, &event),
+            (None, None, [repo_hash, event_name]) => {
+                cmd::capture::claude_code::hook_command(repo_hash, event_name)
+            }
+            // Misuse: log + exit 0 so the hook never breaks the agent.
+            _ => Ok(()),
+        },
     }
 }
