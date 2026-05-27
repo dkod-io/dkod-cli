@@ -82,18 +82,34 @@ pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
 ///
 /// Ordering matters: `session.commits` is set BEFORE `write_session` so the
 /// session blob and every commit-link ref resolve to the same final blob.
+///
+/// Failure policy: writing the session is the ONLY fatal step — if it fails,
+/// the session is not persisted and the error propagates so the caller treats
+/// the flush as failed. Commit discovery and per-commit linking are
+/// best-effort: a bad/unreadable start HEAD yields no commits, and a single
+/// link failure mid-loop is skipped rather than propagated. Returns the shas
+/// that were successfully linked.
 pub fn write_session_with_commit_links(
     repo_path: &Path,
     session: &mut Session,
     head_at_start: Option<&str>,
 ) -> Result<Vec<String>> {
-    let commits = new_commits_since(repo_path, head_at_start)?;
+    // Commit discovery is best-effort: a bad/unreadable start HEAD must never
+    // block persisting the session.
+    let commits = new_commits_since(repo_path, head_at_start).unwrap_or_default();
     session.commits = commits.clone();
+    // The session write is the only fatal step — if it fails, the session is
+    // not persisted and the caller must treat the flush as failed.
     write_session(repo_path, session)?;
+    // Linking is best-effort and per-commit: a single failure neither aborts the
+    // remaining links nor fails the call. Returns the shas successfully linked.
+    let mut linked = Vec::new();
     for sha in &commits {
-        link_session_to_commit(repo_path, &session.id, sha)?;
+        if link_session_to_commit(repo_path, &session.id, sha).is_ok() {
+            linked.push(sha.clone());
+        }
     }
-    Ok(commits)
+    Ok(linked)
 }
 
 /// Resolve `refs/dkod/sessions/<id>`, read the blob it points at, and
