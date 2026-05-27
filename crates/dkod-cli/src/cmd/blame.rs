@@ -42,8 +42,17 @@ pub fn run(cwd: &Path, path: &str) -> Result<()> {
                 println!("{lineno:>5} {agent:<11} {short} {summary} | {}", bl.content);
             }
             None => {
-                let short = &bl.sha[..bl.sha.len().min(8)];
-                println!("{lineno:>5} {:<11} {short} | {}", "(human)", bl.content);
+                if bl.sha.bytes().all(|b| b == b'0') {
+                    // git blame emits an all-zeros sha for not-yet-committed /
+                    // working-tree-modified lines — these aren't a human commit.
+                    println!(
+                        "{lineno:>5} {:<11}          | {}",
+                        "(uncommitted)", bl.content
+                    );
+                } else {
+                    let short = &bl.sha[..bl.sha.len().min(8)];
+                    println!("{lineno:>5} {:<11} {short} | {}", "(human)", bl.content);
+                }
             }
         }
     }

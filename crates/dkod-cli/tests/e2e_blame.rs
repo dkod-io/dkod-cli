@@ -52,6 +52,11 @@ fn blame_annotates_ai_lines_and_passes_through_others() {
     dkod_core::store::write_session(repo.path(), &s).unwrap();
     dkod_core::store::link_session_to_commit(repo.path(), &s.id, &sha).unwrap();
 
+    // second, unlinked (human) commit — no session linked to it
+    std::fs::write(repo.path().join("f.txt"), "ai line\nhuman line\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-qm", "human commit"]);
+
     let out = Command::cargo_bin("dkod")
         .unwrap()
         .current_dir(repo.path())
@@ -68,4 +73,8 @@ fn blame_annotates_ai_lines_and_passes_through_others() {
         "prompt summary missing:\n{stdout}"
     );
     assert!(stdout.contains("ai line"), "source line missing:\n{stdout}");
+    assert!(
+        stdout.contains("(human)"),
+        "human passthrough missing:\n{stdout}"
+    );
 }
