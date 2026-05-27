@@ -18,15 +18,7 @@ pub fn run(cwd: &Path) -> Result<()> {
     });
 
     for s in sessions {
-        let agent = match s.agent {
-            dkod_core::Agent::ClaudeCode => "claude_code",
-            dkod_core::Agent::Codex => "codex",
-            dkod_core::Agent::CopilotCli => "copilot_cli",
-            dkod_core::Agent::Cursor => "cursor",
-            dkod_core::Agent::FactoryAi => "factory_ai",
-            dkod_core::Agent::GeminiCli => "gemini_cli",
-            dkod_core::Agent::OpenCode => "open_code",
-        };
+        let agent = dkod_core::agent_label(&s.agent);
         println!("{}  {}  {}", s.id, agent, s.prompt_summary);
     }
     Ok(())

@@ -545,7 +545,18 @@ fn handle_finished_session(
     dkod_core::redact::redact_session(&mut session, &cfg.redact);
     let n = session.messages.len();
     let id = session.id.clone();
-    dkod_core::store::write_session(repo_root, &session).context("write session")?;
+    let linked = dkod_core::store::write_session_with_commit_links(
+        repo_root,
+        &mut session,
+        fs.head_at_start.as_deref(),
+    )
+    .context("write session")?;
+    if !linked.is_empty() {
+        eprintln!(
+            "dkod: claude-code: linked session {id} to {} commit(s)",
+            linked.len()
+        );
+    }
     eprintln!("dkod: captured Claude Code session {id} ({n} messages) -> dkod show {id}");
     Ok(())
 }

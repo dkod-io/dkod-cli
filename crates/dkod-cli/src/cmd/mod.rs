@@ -1,3 +1,4 @@
+pub mod blame;
 pub mod capture;
 pub mod init;
 pub mod log;

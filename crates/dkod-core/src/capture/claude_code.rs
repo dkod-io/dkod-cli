@@ -127,6 +127,16 @@ impl WireEvent {
     }
 }
 
+/// Current HEAD commit SHA of the git repo at `path`, or `None` if `path`
+/// isn't a git repo or HEAD is unborn (no commits yet).
+pub(crate) fn head_sha(path: &Path) -> Option<String> {
+    gix::open(path)
+        .ok()?
+        .head_id()
+        .ok()
+        .map(|id| id.detach().to_string())
+}
+
 /// In-flight session state. Held in [`SessionTracker`] until the session
 /// ends (cleanly or via the orphan watchdog).
 #[derive(Debug, Clone)]
@@ -134,6 +144,9 @@ struct InFlight {
     transcript_path: PathBuf,
     cwd: PathBuf,
     last_event_at: Instant,
+    /// HEAD commit SHA of the repo at `cwd` when `SessionStart` was
+    /// processed, or `None` if `cwd` wasn't a git repo / HEAD was unborn.
+    head_at_start: Option<String>,
 }
 
 /// Outcome of an event applied to a [`SessionTracker`]: a session has
@@ -145,6 +158,10 @@ pub struct FinishedSession {
     pub transcript_path: PathBuf,
     pub cwd: PathBuf,
     pub end_reason: EndReason,
+    /// HEAD commit SHA of the repo at `cwd` when the session started, or
+    /// `None` if it wasn't a git repo / HEAD was unborn. Used by a later
+    /// step to link the session to the commits it produced.
+    pub head_at_start: Option<String>,
 }
 
 /// Why a session was reported as finished.
@@ -197,12 +214,15 @@ impl SessionTracker {
                 transcript_path,
                 ..
             } => {
+                let cwd = PathBuf::from(cwd);
+                let head_at_start = head_sha(&cwd);
                 self.sessions.insert(
                     session_id,
                     InFlight {
                         transcript_path: PathBuf::from(transcript_path),
-                        cwd: PathBuf::from(cwd),
+                        cwd,
                         last_event_at: now,
+                        head_at_start,
                     },
                 );
                 None
@@ -215,7 +235,7 @@ impl SessionTracker {
                 ..
             } => {
                 let removed = self.sessions.remove(&session_id);
-                let (final_path, final_cwd) = match removed {
+                let (final_path, final_cwd, head_at_start) = match removed {
                     Some(inflight) => {
                         // Prefer the path the SessionEnd hook reports, since
                         // it's the one Claude Code is closing right now;
@@ -226,15 +246,16 @@ impl SessionTracker {
                         } else {
                             PathBuf::from(transcript_path)
                         };
-                        (path, inflight.cwd)
+                        (path, inflight.cwd, inflight.head_at_start)
                     }
-                    None => (PathBuf::from(transcript_path), PathBuf::from(cwd)),
+                    None => (PathBuf::from(transcript_path), PathBuf::from(cwd), None),
                 };
                 Some(FinishedSession {
                     session_id,
                     transcript_path: final_path,
                     cwd: final_cwd,
                     end_reason: EndReason::Clean(reason),
+                    head_at_start,
                 })
             }
             other => {
@@ -250,6 +271,7 @@ impl SessionTracker {
                         transcript_path: PathBuf::new(),
                         cwd,
                         last_event_at: now,
+                        head_at_start: None,
                     });
                 None
             }
@@ -280,6 +302,7 @@ impl SessionTracker {
                     transcript_path: state.transcript_path,
                     cwd: state.cwd,
                     end_reason: EndReason::Orphan,
+                    head_at_start: state.head_at_start,
                 });
             }
         }
@@ -763,6 +786,45 @@ mod tests {
             reason: reason.into(),
             transcript_path: "/tmp/demo/transcript.jsonl".into(),
         }
+    }
+
+    // ---- head_sha helper tests ----
+
+    #[test]
+    fn head_sha_returns_none_for_non_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(head_sha(tmp.path()), None);
+    }
+
+    #[test]
+    fn head_sha_returns_none_for_unborn_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        assert_eq!(head_sha(tmp.path()), None);
+    }
+
+    #[test]
+    fn head_sha_returns_sha_after_commit() {
+        use gix::ObjectId;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        crate::store::ensure_committer(&mut repo).unwrap();
+        let sig = gix::actor::SignatureRef {
+            name: "test".into(),
+            email: "t@example.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let tree: gix::ObjectId = repo.empty_tree().id().into();
+        let commit_id = repo
+            .commit_as(sig, sig, "HEAD", "init", tree, Vec::<ObjectId>::new())
+            .unwrap()
+            .detach();
+
+        let sha = head_sha(tmp.path()).expect("head_sha after commit");
+        assert_eq!(sha, commit_id.to_string());
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // ---- Wire-event round-trip tests ----

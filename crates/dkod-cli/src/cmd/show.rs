@@ -7,15 +7,7 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
     let s =
         dkod_core::store::read_session(cwd, id).with_context(|| format!("read session {id}"))?;
 
-    let agent = match s.agent {
-        dkod_core::Agent::ClaudeCode => "claude_code",
-        dkod_core::Agent::Codex => "codex",
-        dkod_core::Agent::CopilotCli => "copilot_cli",
-        dkod_core::Agent::Cursor => "cursor",
-        dkod_core::Agent::FactoryAi => "factory_ai",
-        dkod_core::Agent::GeminiCli => "gemini_cli",
-        dkod_core::Agent::OpenCode => "open_code",
-    };
+    let agent = dkod_core::agent_label(&s.agent);
     println!("session {}", s.id);
     println!("agent   {}", agent);
     println!("created {}  duration_ms={}", s.created_at, s.duration_ms);
