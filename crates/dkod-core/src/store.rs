@@ -74,6 +74,28 @@ pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
     Ok(())
 }
 
+/// Populate `session.commits` from HEAD-watching (commits made since
+/// `head_at_start`) and persist everything: write the session blob (which now
+/// carries the commit list) and a `refs/dkod/commits/<sha>` link per commit,
+/// all pointing at the same blob. `head_at_start` is the repo HEAD recorded
+/// when the session began; `None` (or a non-ancestor) links nothing.
+///
+/// Ordering matters: `session.commits` is set BEFORE `write_session` so the
+/// session blob and every commit-link ref resolve to the same final blob.
+pub fn write_session_with_commit_links(
+    repo_path: &Path,
+    session: &mut Session,
+    head_at_start: Option<&str>,
+) -> Result<Vec<String>> {
+    let commits = new_commits_since(repo_path, head_at_start)?;
+    session.commits = commits.clone();
+    write_session(repo_path, session)?;
+    for sha in &commits {
+        link_session_to_commit(repo_path, &session.id, sha)?;
+    }
+    Ok(commits)
+}
+
 /// Resolve `refs/dkod/sessions/<id>`, read the blob it points at, and
 /// deserialize it back into a `Session`.
 pub fn read_session(repo_path: &Path, id: &str) -> Result<Session> {
@@ -393,6 +415,64 @@ mod tests {
         assert!(super::new_commits_since(tmp.path(), Some(&a.to_string()))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn write_session_with_commit_links_populates_commits_and_links() {
+        use gix::ObjectId;
+        let tmp = TempDir::new().unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        super::ensure_committer(&mut repo).unwrap();
+        let sig = gix::actor::SignatureRef {
+            name: "t".into(),
+            email: "t@e.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let tree: gix::ObjectId = repo.empty_tree().id().into();
+
+        // start HEAD = commit A
+        let a = repo
+            .commit_as(sig, sig, "HEAD", "a", tree, Vec::<ObjectId>::new())
+            .unwrap()
+            .detach();
+        // then the session "produces" commit B
+        let b = repo
+            .commit_as(sig, sig, "HEAD", "b", tree, vec![a])
+            .unwrap()
+            .detach();
+
+        let mut s = fixture_session();
+        let linked =
+            super::write_session_with_commit_links(tmp.path(), &mut s, Some(&a.to_string()))
+                .unwrap();
+        assert_eq!(linked, vec![b.to_string()]);
+        assert_eq!(s.commits, vec![b.to_string()]);
+
+        // session blob carries the commit; reading back confirms persistence
+        let back = super::read_session(tmp.path(), &s.id).unwrap();
+        assert_eq!(back.commits, vec![b.to_string()]);
+
+        // commit-link ref exists and points at the SAME blob as the session ref
+        let repo = gix::open(tmp.path()).unwrap();
+        let session_ref = repo
+            .find_reference(&crate::refs::session_ref(&s.id))
+            .unwrap();
+        let commit_ref = repo
+            .find_reference(&crate::refs::commit_ref(&b.to_string()))
+            .unwrap();
+        assert_eq!(session_ref.id(), commit_ref.id());
+    }
+
+    #[test]
+    fn write_session_with_commit_links_none_start_links_nothing() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let mut s = fixture_session();
+        let linked = super::write_session_with_commit_links(tmp.path(), &mut s, None).unwrap();
+        assert!(linked.is_empty());
+        assert!(s.commits.is_empty());
+        // session is still written even when nothing is linked
+        assert_eq!(super::read_session(tmp.path(), &s.id).unwrap().id, s.id);
     }
 
     #[test]
