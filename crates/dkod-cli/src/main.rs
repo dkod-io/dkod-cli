@@ -48,6 +48,11 @@ enum Cmd {
         /// Session id to display
         id: String,
     },
+    /// Show, per line of a file, the AI agent session that produced it.
+    Blame {
+        /// Path to the file to annotate (relative to the repo).
+        path: String,
+    },
     /// Run the seamless capture wizard: detect installed AI agents and
     /// wire their hook config / PATH shim so dkod captures every session
     /// automatically. Re-run any time to refresh hooks; idempotent.
@@ -125,6 +130,7 @@ fn main() -> anyhow::Result<()> {
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
+        Cmd::Blame { path } => cmd::blame::run(&std::env::current_dir()?, &path),
         Cmd::Setup {
             scope,
             non_interactive,
