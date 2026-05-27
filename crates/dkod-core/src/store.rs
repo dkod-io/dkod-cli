@@ -148,6 +148,10 @@ pub fn list_sessions(repo_path: &Path) -> Result<Vec<String>> {
 /// session-start HEAD, so attributing any commit to the session would be a
 /// guess. Used by the capture flow to link a session to the commits it produced.
 ///
+/// If `start` is not an ancestor of the current HEAD (e.g. a mid-session branch
+/// switch, or a stale/foreign SHA), returns an empty Vec rather than
+/// over-attributing unrelated history.
+///
 /// Note: a rebase/squash/amend that rewrites SHAs *after* this runs will leave
 /// the `refs/dkod/commits/<old-sha>` links pointing at commits that no longer
 /// exist on the branch. Re-linking on observed history rewrites is a future
@@ -175,10 +179,15 @@ pub fn new_commits_since(repo_path: &Path, start: Option<&str>) -> Result<Vec<St
     let mut out = Vec::new();
     let mut visited = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
+    let mut found_start = false;
     queue.push_back(head_oid);
 
     while let Some(oid) = queue.pop_front() {
-        if oid == start_oid || !visited.insert(oid) {
+        if oid == start_oid {
+            found_start = true;
+            continue;
+        }
+        if !visited.insert(oid) {
             continue;
         }
         out.push(oid.to_string());
@@ -190,6 +199,13 @@ pub fn new_commits_since(repo_path: &Path, start: Option<&str>) -> Result<Vec<St
         for parent in commit.parent_ids() {
             queue.push_back(parent.detach());
         }
+    }
+
+    // `start` was a valid OID but never appeared in HEAD's ancestry — it is not
+    // an ancestor of HEAD. Attribute nothing rather than every commit reachable
+    // from HEAD.
+    if !found_start {
+        return Ok(Vec::new());
     }
     Ok(out)
 }
@@ -375,6 +391,29 @@ mod tests {
             .unwrap()
             .detach();
         assert!(super::new_commits_since(tmp.path(), Some(&a.to_string()))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn new_commits_since_non_ancestor_start_returns_empty() {
+        use gix::ObjectId;
+        let tmp = TempDir::new().unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        super::ensure_committer(&mut repo).unwrap();
+        let sig = gix::actor::SignatureRef {
+            name: "t".into(),
+            email: "t@e.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let tree: gix::ObjectId = repo.empty_tree().id().into();
+        // Real commit on HEAD so head_id resolves.
+        repo.commit_as(sig, sig, "HEAD", "a", tree, Vec::<ObjectId>::new())
+            .unwrap();
+        // A syntactically valid 40-hex SHA that is not in this repo, so it is
+        // not an ancestor of HEAD. Must attribute nothing, not all of history.
+        let stale = "0123456789abcdef0123456789abcdef01234567";
+        assert!(super::new_commits_since(tmp.path(), Some(stale))
             .unwrap()
             .is_empty());
     }
