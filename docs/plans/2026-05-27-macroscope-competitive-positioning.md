@@ -109,13 +109,30 @@ below better — which a point-tool cannot replicate.
 Selected net-new features, ordered by role. Each requires the corpus and
 is offered by no competitor today.
 
-### 1. `dkod blame` — git-blame for AI *(demo hook, near-term)*
+### 1. `dkod blame` — git-blame for AI *(SHIPPED — V1)*
 
 Point at any file:line → the exact session and prompt that produced it.
 Per-line attribution back to agent intent. This is the visceral demo
 that makes provenance (A) tangible in five seconds, and it extends a
-mental model every developer already has (`git blame`). Likely the first
-forensics surface to ship after the team dashboard.
+mental model every developer already has (`git blame`).
+
+**Status: implemented** (`docs/plans/2026-05-27-dkod-blame.md`). V1 ships
+two pieces: (a) HEAD-watching session→commit linkage — the capture flow
+records repo HEAD at session start and links every commit reachable from
+HEAD at session end to the session via `refs/dkod/commits/<sha>`; and
+(b) the `dkod blame <path>` command, which shells out to
+`git blame --porcelain` (gix 0.66 has no blame) and maps each line's
+commit through that ref to its session, rendering agent + short session
+id + prompt summary; human commits show normally and working-tree edits
+render as `(uncommitted)`.
+
+Carried-forward limitations: (1) rebase/squash/amend after capture
+rewrites commit SHAs and breaks the `refs/dkod/commits/<old-sha>` links —
+re-linking on observed history rewrites is a follow-up; (2) only the
+Claude Code capture path records `head_at_start` and links commits today,
+so `dkod blame` attributes lines authored through Claude Code; extending
+HEAD-watching to the other agents' adapters (which still set
+`commits: vec![]`) is the next step.
 
 ### 2. Org session memory *(the company-defining bet)*
 
