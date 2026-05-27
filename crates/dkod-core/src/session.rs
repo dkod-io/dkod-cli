@@ -30,6 +30,20 @@ pub enum Agent {
     OpenCode,
 }
 
+/// Stable snake_case label for an agent. Single source of truth for the
+/// CLI's human-readable agent column (log / show / blame).
+pub fn agent_label(a: &Agent) -> &'static str {
+    match a {
+        Agent::ClaudeCode => "claude_code",
+        Agent::Codex => "codex",
+        Agent::CopilotCli => "copilot_cli",
+        Agent::Cursor => "cursor",
+        Agent::FactoryAi => "factory_ai",
+        Agent::GeminiCli => "gemini_cli",
+        Agent::OpenCode => "open_code",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
@@ -75,6 +89,13 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_label_is_stable_snake_case() {
+        assert_eq!(agent_label(&Agent::ClaudeCode), "claude_code");
+        assert_eq!(agent_label(&Agent::OpenCode), "open_code");
+        assert_eq!(agent_label(&Agent::FactoryAi), "factory_ai");
+    }
 
     #[test]
     fn factory_ai_agent_serializes_as_snake_case() {
