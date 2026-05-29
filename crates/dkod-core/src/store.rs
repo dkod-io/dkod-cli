@@ -248,6 +248,18 @@ pub fn new_commits_since(repo_path: &Path, start: Option<&str>) -> Result<Vec<St
     Ok(out)
 }
 
+/// Current HEAD commit SHA of the git repo at `path`, or None if `path`
+/// isn't a git repo or HEAD is unborn (no commits yet). Used by the capture
+/// flows to record where a session started, so the commits it produces can be
+/// linked via `write_session_with_commit_links`.
+pub fn head_sha(path: &Path) -> Option<String> {
+    gix::open(path)
+        .ok()?
+        .head_id()
+        .ok()
+        .map(|id| id.detach().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +501,43 @@ mod tests {
         assert!(s.commits.is_empty());
         // session is still written even when nothing is linked
         assert_eq!(super::read_session(tmp.path(), &s.id).unwrap().id, s.id);
+    }
+
+    #[test]
+    fn head_sha_returns_none_for_non_repo() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(head_sha(tmp.path()), None);
+    }
+
+    #[test]
+    fn head_sha_returns_none_for_unborn_repo() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        assert_eq!(head_sha(tmp.path()), None);
+    }
+
+    #[test]
+    fn head_sha_returns_sha_after_commit() {
+        use gix::ObjectId;
+
+        let tmp = TempDir::new().unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        super::ensure_committer(&mut repo).unwrap();
+        let sig = gix::actor::SignatureRef {
+            name: "test".into(),
+            email: "t@example.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let tree: gix::ObjectId = repo.empty_tree().id().into();
+        let commit_id = repo
+            .commit_as(sig, sig, "HEAD", "init", tree, Vec::<ObjectId>::new())
+            .unwrap()
+            .detach();
+
+        let sha = head_sha(tmp.path()).expect("head_sha after commit");
+        assert_eq!(sha, commit_id.to_string());
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

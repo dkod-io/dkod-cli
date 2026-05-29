@@ -126,13 +126,15 @@ commit through that ref to its session, rendering agent + short session
 id + prompt summary; human commits show normally and working-tree edits
 render as `(uncommitted)`.
 
-Carried-forward limitations: (1) rebase/squash/amend after capture
-rewrites commit SHAs and breaks the `refs/dkod/commits/<old-sha>` links —
-re-linking on observed history rewrites is a follow-up; (2) only the
-Claude Code capture path records `head_at_start` and links commits today,
-so `dkod blame` attributes lines authored through Claude Code; extending
-HEAD-watching to the other agents' adapters (which still set
-`commits: vec![]`) is the next step.
+Commit-linking now spans **all agents**: the Claude Code server path plus
+the six synchronous wrappers (codex, copilot-cli, cursor, factory-ai,
+gemini-cli, opencode) each records HEAD before the agent runs and links the
+commits it produces via a shared `finalize_session` helper. So `dkod blame`
+attributes lines regardless of which agent wrote them.
+
+Carried-forward limitation: rebase/squash/amend after capture rewrites
+commit SHAs and breaks the `refs/dkod/commits/<old-sha>` links —
+re-linking on observed history rewrites is a follow-up.
 
 ### 2. Org session memory *(the company-defining bet)*
 

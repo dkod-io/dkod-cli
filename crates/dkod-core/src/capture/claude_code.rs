@@ -127,16 +127,6 @@ impl WireEvent {
     }
 }
 
-/// Current HEAD commit SHA of the git repo at `path`, or `None` if `path`
-/// isn't a git repo or HEAD is unborn (no commits yet).
-pub(crate) fn head_sha(path: &Path) -> Option<String> {
-    gix::open(path)
-        .ok()?
-        .head_id()
-        .ok()
-        .map(|id| id.detach().to_string())
-}
-
 /// In-flight session state. Held in [`SessionTracker`] until the session
 /// ends (cleanly or via the orphan watchdog).
 #[derive(Debug, Clone)]
@@ -215,7 +205,7 @@ impl SessionTracker {
                 ..
             } => {
                 let cwd = PathBuf::from(cwd);
-                let head_at_start = head_sha(&cwd);
+                let head_at_start = crate::store::head_sha(&cwd);
                 self.sessions.insert(
                     session_id,
                     InFlight {
@@ -786,45 +776,6 @@ mod tests {
             reason: reason.into(),
             transcript_path: "/tmp/demo/transcript.jsonl".into(),
         }
-    }
-
-    // ---- head_sha helper tests ----
-
-    #[test]
-    fn head_sha_returns_none_for_non_repo() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        assert_eq!(head_sha(tmp.path()), None);
-    }
-
-    #[test]
-    fn head_sha_returns_none_for_unborn_repo() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        gix::init(tmp.path()).unwrap();
-        assert_eq!(head_sha(tmp.path()), None);
-    }
-
-    #[test]
-    fn head_sha_returns_sha_after_commit() {
-        use gix::ObjectId;
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut repo = gix::init(tmp.path()).unwrap();
-        crate::store::ensure_committer(&mut repo).unwrap();
-        let sig = gix::actor::SignatureRef {
-            name: "test".into(),
-            email: "t@example.com".into(),
-            time: gix::date::Time::now_utc(),
-        };
-        let tree: gix::ObjectId = repo.empty_tree().id().into();
-        let commit_id = repo
-            .commit_as(sig, sig, "HEAD", "init", tree, Vec::<ObjectId>::new())
-            .unwrap()
-            .detach();
-
-        let sha = head_sha(tmp.path()).expect("head_sha after commit");
-        assert_eq!(sha, commit_id.to_string());
-        assert_eq!(sha.len(), 40);
-        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // ---- Wire-event round-trip tests ----
