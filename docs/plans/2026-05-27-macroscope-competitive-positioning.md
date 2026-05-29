@@ -128,7 +128,7 @@ render as `(uncommitted)`.
 
 Commit-linking now spans **all agents**: the Claude Code server path plus
 the six synchronous wrappers (codex, copilot-cli, cursor, factory-ai,
-gemini-cli, opencode) each record HEAD before the agent runs and link the
+gemini-cli, opencode) each records HEAD before the agent runs and links the
 commits it produces via a shared `finalize_session` helper. So `dkod blame`
 attributes lines regardless of which agent wrote them.
 
