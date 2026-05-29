@@ -6,6 +6,9 @@ pub fn run(cwd: &Path, args: Vec<String>) -> Result<()> {
 
     let cfg = super::super::load_config(cwd)?;
 
+    // Record HEAD before the agent runs so we can link the commits it produces.
+    let head_at_start = dkod_core::store::head_sha(cwd);
+
     let codex_bin: PathBuf = std::env::var_os("DKOD_CODEX_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("codex"));
@@ -23,8 +26,11 @@ pub fn run(cwd: &Path, args: Vec<String>) -> Result<()> {
         })
         .context("capture codex session")?;
 
-    dkod_core::redact::redact_session(&mut session, &cfg.redact);
-    dkod_core::store::write_session(cwd, &session).context("write session")?;
-    eprintln!("dkod: captured session {}", session.id);
+    let linked = super::finalize_session(cwd, &mut session, head_at_start.as_deref(), &cfg)?;
+    eprintln!(
+        "dkod: captured session {} ({} commit link(s))",
+        session.id,
+        linked.len()
+    );
     Ok(())
 }
