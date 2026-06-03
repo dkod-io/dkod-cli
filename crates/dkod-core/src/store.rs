@@ -173,9 +173,12 @@ pub fn relink_commit(repo_path: &Path, old_sha: &str, new_sha: &str) -> Result<b
     let mut repo = gix::open(repo_path).context("open repo")?;
     ensure_committer(&mut repo)?;
 
-    let old_ref = match repo.find_reference(&refs::commit_ref(old_sha)) {
-        Ok(r) => r,
-        Err(_) => return Ok(false),
+    let old_ref = match repo
+        .try_find_reference(&refs::commit_ref(old_sha))
+        .context("look up old commit ref")?
+    {
+        Some(r) => r,
+        None => return Ok(false),
     };
     let blob_id = old_ref.id().detach();
 
@@ -658,7 +661,6 @@ mod tests {
         let a = fixture_session();
         let mut b = fixture_session();
         b.id = Session::new_id();
-        std::thread::sleep(std::time::Duration::from_millis(2));
         write_session(tmp.path(), &a).unwrap();
         write_session(tmp.path(), &b).unwrap();
 
