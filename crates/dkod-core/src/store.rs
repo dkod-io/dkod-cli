@@ -159,6 +159,47 @@ pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &s
     Ok(())
 }
 
+/// Re-point `refs/dkod/commits/<new_sha>` at whatever session blob
+/// `refs/dkod/commits/<old_sha>` currently points at. Returns `Ok(true)` if the
+/// old ref existed and the new ref was written, `Ok(false)` if the old ref is
+/// absent (nothing to re-link). The old ref is left in place (additive) so an
+/// undone rewrite (`git reset --hard ORIG_HEAD`) still resolves.
+pub fn relink_commit(repo_path: &Path, old_sha: &str, new_sha: &str) -> Result<bool> {
+    use gix::refs::{
+        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+        Target,
+    };
+
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    ensure_committer(&mut repo)?;
+
+    let old_ref = match repo
+        .try_find_reference(&refs::commit_ref(old_sha))
+        .context("look up old commit ref")?
+    {
+        Some(r) => r,
+        None => return Ok(false),
+    };
+    let blob_id = old_ref.id().detach();
+
+    let ref_name = refs::commit_ref(new_sha);
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: format!("dkod: relink commit {old_sha} -> {new_sha}").into(),
+            },
+            expected: PreviousValue::Any,
+            new: Target::Object(blob_id),
+        },
+        name: ref_name.try_into().context("invalid commit ref name")?,
+        deref: false,
+    })
+    .context("edit commit ref")?;
+    Ok(true)
+}
+
 /// Enumerate all sessions stored under `refs/dkod/sessions/*` in this repo.
 /// Returns the bare session ids (the part after the namespace prefix).
 pub fn list_sessions(repo_path: &Path) -> Result<Vec<String>> {
@@ -561,5 +602,82 @@ mod tests {
         assert!(super::new_commits_since(tmp.path(), Some(stale))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn relink_commit_repoints_new_to_same_blob() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+
+        let old = "0000000000000000000000000000000000000001";
+        let new = "0000000000000000000000000000000000000002";
+        link_session_to_commit(tmp.path(), &s.id, old).unwrap();
+
+        let did = relink_commit(tmp.path(), old, new).unwrap();
+        assert!(did, "relink should report it acted");
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let old_ref = repo.find_reference(&crate::refs::commit_ref(old)).unwrap();
+        let new_ref = repo.find_reference(&crate::refs::commit_ref(new)).unwrap();
+        let sess_ref = repo
+            .find_reference(&crate::refs::session_ref(&s.id))
+            .unwrap();
+        assert_eq!(new_ref.id(), old_ref.id());
+        assert_eq!(new_ref.id(), sess_ref.id());
+    }
+
+    #[test]
+    fn relink_commit_absent_old_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let new = "0000000000000000000000000000000000000002";
+        let did =
+            relink_commit(tmp.path(), "0000000000000000000000000000000000000001", new).unwrap();
+        assert!(!did, "absent old ref means nothing to relink");
+        let repo = gix::open(tmp.path()).unwrap();
+        assert!(repo.find_reference(&crate::refs::commit_ref(new)).is_err());
+    }
+
+    #[test]
+    fn relink_commit_keeps_old_ref() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let old = "0000000000000000000000000000000000000001";
+        let new = "0000000000000000000000000000000000000002";
+        link_session_to_commit(tmp.path(), &s.id, old).unwrap();
+        relink_commit(tmp.path(), old, new).unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        assert!(repo.find_reference(&crate::refs::commit_ref(old)).is_ok());
+    }
+
+    #[test]
+    fn relink_commit_last_writer_wins() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let a = fixture_session();
+        let mut b = fixture_session();
+        b.id = Session::new_id();
+        write_session(tmp.path(), &a).unwrap();
+        write_session(tmp.path(), &b).unwrap();
+
+        let old1 = "0000000000000000000000000000000000000011";
+        let old2 = "0000000000000000000000000000000000000022";
+        let new = "0000000000000000000000000000000000000099";
+        link_session_to_commit(tmp.path(), &a.id, old1).unwrap();
+        link_session_to_commit(tmp.path(), &b.id, old2).unwrap();
+
+        relink_commit(tmp.path(), old1, new).unwrap();
+        relink_commit(tmp.path(), old2, new).unwrap();
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let new_ref = repo.find_reference(&crate::refs::commit_ref(new)).unwrap();
+        let b_ref = repo
+            .find_reference(&crate::refs::session_ref(&b.id))
+            .unwrap();
+        assert_eq!(new_ref.id(), b_ref.id(), "last relink (sessionB) must win");
     }
 }

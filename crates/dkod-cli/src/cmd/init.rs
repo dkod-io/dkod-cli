@@ -8,6 +8,16 @@ use std::process::Command;
 /// automatically once this is wired into `.git/config`.
 const DKOD_FETCH_REFSPEC: &str = "+refs/dkod/*:refs/dkod/*";
 
+/// Sentinel comment marking the dkod-managed post-rewrite hook so re-running
+/// `dkod init` refreshes our hook but never overwrites a foreign one.
+const POST_REWRITE_SENTINEL: &str = "# dkod-managed: re-link sessions after history rewrite";
+
+/// The full managed hook script.
+// The script invokes bare `dkod` (relying on PATH), matching the capture-hook
+// convention; dkod is installed onto PATH by cargo / curl install.sh.
+const POST_REWRITE_SCRIPT: &str =
+    "#!/bin/sh\n# dkod-managed: re-link sessions after history rewrite\nexec dkod relink\n";
+
 pub fn run(cwd: &Path) -> Result<()> {
     // 1. Ensure we're inside (or under) a git repo. `gix::discover`
     //    walks up from `cwd` so `dkod init` works whether the user
@@ -65,6 +75,85 @@ pub fn run(cwd: &Path) -> Result<()> {
         }
     }
 
+    // Install the post-rewrite hook so history rewrites re-link sessions
+    // (dkod blame keeps resolving rewritten lines). Non-fatal: init still
+    // succeeds if the hook can't be written (e.g. read-only hooks dir).
+    if let Err(e) = install_post_rewrite_hook(cwd) {
+        eprintln!("dkod init: could not install post-rewrite hook: {e:#}");
+    }
+
+    Ok(())
+}
+
+/// Install `.git/hooks/post-rewrite` so a rebase/amend/squash re-links session
+/// commit-refs via `dkod relink`. Idempotent; never clobbers a foreign hook.
+/// Honors `core.hooksPath` by warning (not installing) when hooks are redirected.
+fn install_post_rewrite_hook(cwd: &Path) -> Result<()> {
+    // If hooks are redirected, our .git/hooks file would never fire — warn instead.
+    let hp = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--get", "core.hooksPath"])
+        .output()
+        .context("invoke `git config --get core.hooksPath`")?;
+    if hp.status.success() {
+        let path = String::from_utf8_lossy(&hp.stdout).trim().to_string();
+        if !path.is_empty() {
+            eprintln!(
+                "dkod init: core.hooksPath is set ({path}); install a post-rewrite hook there \
+                 manually (exec dkod relink) to enable session re-linking after history rewrites."
+            );
+            return Ok(());
+        }
+    }
+
+    // Resolve the hooks dir git actually uses.
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--git-path", "hooks"])
+        .output()
+        .context("invoke `git rev-parse --git-path hooks`")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "`git rev-parse --git-path hooks` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let hooks_dir = {
+        let p = std::path::PathBuf::from(&rel);
+        if p.is_absolute() {
+            p
+        } else {
+            cwd.join(p)
+        }
+    };
+    std::fs::create_dir_all(&hooks_dir)
+        .with_context(|| format!("create hooks dir {}", hooks_dir.display()))?;
+    let hook = hooks_dir.join("post-rewrite");
+
+    // Foreign-hook guard: only write if absent or our own (sentinel present).
+    if hook.exists() {
+        let existing = std::fs::read_to_string(&hook).unwrap_or_default();
+        if !existing.contains(POST_REWRITE_SENTINEL) {
+            eprintln!(
+                "dkod init: existing post-rewrite hook found at {}; not overwriting. \
+                 Add `exec dkod relink` to it to enable session re-linking.",
+                hook.display()
+            );
+            return Ok(());
+        }
+    }
+
+    std::fs::write(&hook, POST_REWRITE_SCRIPT)
+        .with_context(|| format!("write {}", hook.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod 755 {}", hook.display()))?;
+    }
     Ok(())
 }
 

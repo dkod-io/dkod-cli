@@ -2,6 +2,7 @@ pub mod blame;
 pub mod capture;
 pub mod init;
 pub mod log;
+pub mod relink;
 pub mod setup;
 pub mod show;
 

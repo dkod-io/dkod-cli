@@ -132,9 +132,19 @@ gemini-cli, opencode) each records HEAD before the agent runs and links the
 commits it produces via a shared `finalize_session` helper. So `dkod blame`
 attributes lines regardless of which agent wrote them.
 
-Carried-forward limitation: rebase/squash/amend after capture rewrites
-commit SHAs and breaks the `refs/dkod/commits/<old-sha>` links —
-re-linking on observed history rewrites is a follow-up.
+History-rewrite re-linking now ships
+(`docs/plans/2026-06-03-history-rewrite-relinking-design.md`): a per-repo
+`post-rewrite` git hook (installed by `dkod init`) pipes git's old→new SHA
+pairs to `dkod relink`, which re-points `refs/dkod/commits/<new>` at the
+session blob — so rebase / `commit --amend` / squash / reword keep their
+provenance and `dkod blame` resolves the rewritten lines.
+
+Remaining residue (documented limitations): `git filter-repo`, externally-
+rewritten history, and history rewritten before `dkod init` are not
+auto-relinked (blame falls back to `(human)`); squash is lossy
+(last-writer-wins — the squashed commit attributes to one session);
+`core.hooksPath` users wire the hook manually; and `dkod show` may list a
+pre-rewrite SHA (re-linking updates refs, not the session blob's commit list).
 
 ### 2. Org session memory *(the company-defining bet)*
 
