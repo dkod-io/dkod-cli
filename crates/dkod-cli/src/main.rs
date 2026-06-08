@@ -93,6 +93,10 @@ enum Cmd {
         /// with `--agent`/`--event`; presence is detected at runtime.
         legacy_args: Vec<String>,
     },
+    /// Internal: invoked by the git post-rewrite hook to re-link sessions
+    /// after a history rewrite. Not for direct use.
+    #[command(hide = true)]
+    Relink,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -101,7 +105,10 @@ fn main() -> anyhow::Result<()> {
     // (chicken-and-egg) and `CaptureHook` (must stay on its own fast
     // path — the hook is hot-spot code that fires once per tool use,
     // and even a single TOML parse on top adds avoidable latency).
-    if !matches!(cli.cmd, Cmd::Setup { .. } | Cmd::CaptureHook { .. }) {
+    if !matches!(
+        cli.cmd,
+        Cmd::Setup { .. } | Cmd::CaptureHook { .. } | Cmd::Relink
+    ) {
         maybe_warn_drift();
     }
     match cli.cmd {
@@ -152,6 +159,7 @@ fn main() -> anyhow::Result<()> {
             // Misuse: log + exit 0 so the hook never breaks the agent.
             _ => Ok(()),
         },
+        Cmd::Relink => cmd::relink::run(&std::env::current_dir()?),
     }
 }
 
