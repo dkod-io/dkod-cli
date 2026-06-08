@@ -103,3 +103,32 @@ fn init_does_not_clobber_foreign_hook() {
         "foreign hook must be left intact"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn init_skips_hook_when_hookspath_is_set() {
+    let repo = TempDir::new().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    // Redirect hooks elsewhere; our .git/hooks/post-rewrite must NOT be written.
+    let custom = repo.path().join("my-hooks");
+    std::fs::create_dir_all(&custom).unwrap();
+    git(
+        repo.path(),
+        &["config", "core.hooksPath", custom.to_str().unwrap()],
+    );
+
+    dkod_init(repo.path());
+
+    // No post-rewrite under the default .git/hooks dir (we resolve via rev-parse,
+    // but with hooksPath set the install must early-return without writing).
+    let default_hook = repo.path().join(".git/hooks/post-rewrite");
+    assert!(
+        !default_hook.exists(),
+        "must not write .git/hooks/post-rewrite when core.hooksPath is set"
+    );
+    // And nothing written into the custom dir either (we warn, don't install).
+    assert!(
+        !custom.join("post-rewrite").exists(),
+        "must not install into the custom hooksPath dir"
+    );
+}

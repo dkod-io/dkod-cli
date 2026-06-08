@@ -13,6 +13,8 @@ const DKOD_FETCH_REFSPEC: &str = "+refs/dkod/*:refs/dkod/*";
 const POST_REWRITE_SENTINEL: &str = "# dkod-managed: re-link sessions after history rewrite";
 
 /// The full managed hook script.
+// The script invokes bare `dkod` (relying on PATH), matching the capture-hook
+// convention; dkod is installed onto PATH by cargo / curl install.sh.
 const POST_REWRITE_SCRIPT: &str =
     "#!/bin/sh\n# dkod-managed: re-link sessions after history rewrite\nexec dkod relink\n";
 
