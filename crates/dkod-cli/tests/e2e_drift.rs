@@ -72,7 +72,9 @@ fn drift_flags_sensitive_path_and_hides_clean() {
         &[".github/workflows/ci.yml"],
         &[ci_sha],
     );
-    // Clean: verbose prompt (not small-ask), benign files (not sensitive, < 5 files, named no paths).
+    // Clean: small ask, but the change is small (2 files < large_change_files=5,
+    // no commits → no line magnitude), touches no sensitive path, and names no
+    // path-shaped tokens — so no rule fires.
     let clean_id = seed(
         repo.path(),
         "refactor the parser module and update its tests across the codebase",
