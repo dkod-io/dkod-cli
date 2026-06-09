@@ -53,6 +53,15 @@ enum Cmd {
         /// Path to the file to annotate (relative to the repo).
         path: String,
     },
+    /// Report sessions where the agent did materially more or other than the
+    /// prompt asked (intent-vs-output drift).
+    Drift {
+        /// Session id to analyze; omit to scan all sessions.
+        session_id: Option<String>,
+        /// Include clean sessions in the listing.
+        #[arg(long)]
+        all: bool,
+    },
     /// Run the seamless capture wizard: detect installed AI agents and
     /// wire their hook config / PATH shim so dkod captures every session
     /// automatically. Re-run any time to refresh hooks; idempotent.
@@ -138,6 +147,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
         Cmd::Blame { path } => cmd::blame::run(&std::env::current_dir()?, &path),
+        Cmd::Drift { session_id, all } => {
+            cmd::drift::run(&std::env::current_dir()?, session_id.as_deref(), all)
+        }
         Cmd::Setup {
             scope,
             non_interactive,
