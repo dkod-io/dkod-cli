@@ -18,22 +18,10 @@ fn seg_match(pat: &[&str], txt: &[&str]) -> bool {
     match pat.split_first() {
         None => txt.is_empty(),
         Some((&"**", rest)) => {
-            // `**` matches zero or more path segments. The trailing pattern may
-            // match the remaining path as a suffix, but `**` may also leave
-            // trailing path segments after the match (e.g. `**/auth*` matching
-            // `auth/mod.rs`): a `**`-prefixed pattern matches if it matches any
-            // window of the path, anchored only at its head.
-            if rest.is_empty() {
-                return true;
-            }
+            // `**` matches zero or more path segments; the remaining pattern
+            // must then match the remaining path (anchored to the end).
             for i in 0..=txt.len() {
                 if seg_match(rest, &txt[i..]) {
-                    return true;
-                }
-                // Allow `**` to also absorb path segments *after* the rest
-                // match: the rest must match starting at `i`, with any
-                // remaining path segments swallowed by the leading `**`.
-                if i < txt.len() && seg_match_prefix(rest, &txt[i..]) {
                     return true;
                 }
             }
@@ -45,28 +33,6 @@ fn seg_match(pat: &[&str], txt: &[&str]) -> bool {
             }
             if segment_match(seg, txt[0]) {
                 seg_match(rest, &txt[1..])
-            } else {
-                false
-            }
-        }
-    }
-}
-
-/// Match `pat` against a *prefix* of `txt` segment-by-segment: every pattern
-/// segment must match, but trailing path segments may remain (they are
-/// absorbed by a preceding `**`). A `**` inside `pat` recurses through the
-/// full matcher. Used only from the `**` arm of [`seg_match`], so that a
-/// directory-style sensitive glob such as `**/auth*` matches a file under an
-/// `auth`-prefixed directory (`auth/mod.rs`) as well as a file named `auth*`.
-fn seg_match_prefix(pat: &[&str], txt: &[&str]) -> bool {
-    match pat.split_first() {
-        None => true,
-        Some((&"**", _)) => seg_match(pat, txt),
-        Some((&seg, rest)) => {
-            if txt.is_empty() {
-                false
-            } else if segment_match(seg, txt[0]) {
-                seg_match_prefix(rest, &txt[1..])
             } else {
                 false
             }
@@ -281,8 +247,11 @@ mod glob_tests {
     fn env_and_auth_prefixes() {
         assert!(glob_match("**/.env*", ".env"));
         assert!(glob_match("**/.env*", "cfg/.env.local"));
+        // `**/auth*` matches a basename starting with "auth" at any depth,
+        // NOT a file inside an `auth/` directory (whose basename differs).
         assert!(glob_match("**/auth*", "src/auth.rs"));
-        assert!(glob_match("**/auth*", "auth/mod.rs"));
+        assert!(glob_match("**/auth*", "auth.rs"));
+        assert!(!glob_match("**/auth*", "auth/mod.rs"));
         assert!(!glob_match("**/auth*", "src/oauth.rs"));
     }
     #[test]
