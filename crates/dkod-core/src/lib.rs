@@ -2,6 +2,7 @@
 
 pub mod capture;
 pub mod config;
+pub mod drift;
 pub mod redact;
 pub mod refs;
 pub mod session;

@@ -93,8 +93,10 @@ impl DriftVerdict { pub fn is_clean(&self) -> bool { self.reasons.is_empty() } }
   Clean sessions are omitted unless `--all` is passed.
 - `dkod drift <session-id>` — that one session's verdict: `clean`, or the full
   reason list (plus the touched-file count and diff stats when available).
-- **Exit code is always 0** — `dkod drift` is a report, not a gate. (A
-  `--exit-code`/CI-gate mode is a deliberate future layer, not v1.)
+- **Drift findings never gate** — a flagged session still exits 0 (`dkod drift`
+  is a report, not a gate). Genuine errors (not a git repo, unknown session id,
+  bad config) exit non-zero like any command. (A `--exit-code`/CI-gate mode is a
+  deliberate future layer, not v1.)
 
 ## Architecture (units)
 
