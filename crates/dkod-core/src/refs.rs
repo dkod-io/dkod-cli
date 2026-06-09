@@ -6,6 +6,14 @@ pub fn commit_ref(sha: &str) -> String {
     format!("refs/dkod/commits/{sha}")
 }
 
+/// Ref namespace mapping a commit's `git patch-id` to the session blob, so
+/// `dkod blame` can recover provenance after a diff-preserving rewrite that
+/// the post-rewrite hook never observed (pre-init history, clones without the
+/// hook, filter-repo).
+pub fn patchid_ref(patch_id: &str) -> String {
+    format!("refs/dkod/patchid/{patch_id}")
+}
+
 pub fn parse_session_ref(r: &str) -> Option<String> {
     r.strip_prefix("refs/dkod/sessions/").map(|s| s.to_string())
 }
@@ -29,6 +37,15 @@ mod tests {
         assert_eq!(
             commit_ref(sha),
             "refs/dkod/commits/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        );
+    }
+
+    #[test]
+    fn patchid_ref_path_is_correct() {
+        let pid = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        assert_eq!(
+            patchid_ref(pid),
+            "refs/dkod/patchid/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
         );
     }
 

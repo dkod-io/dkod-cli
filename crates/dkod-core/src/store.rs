@@ -159,6 +159,43 @@ pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &s
     Ok(())
 }
 
+/// Write `refs/dkod/patchid/<patch_id>` pointing at the same blob the session
+/// ref points at — the patch-id provenance fallback for `dkod blame`. Mirrors
+/// `link_session_to_commit`. Overwrite-on-collision (`PreviousValue::Any`):
+/// two sessions with the same diff → last writer wins, matching the commit-ref
+/// policy.
+pub fn link_session_to_patchid(repo_path: &Path, session_id: &str, patch_id: &str) -> Result<()> {
+    use gix::refs::{
+        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+        Target,
+    };
+
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    ensure_committer(&mut repo)?;
+    let session_ref = repo
+        .find_reference(&refs::session_ref(session_id))
+        .context("find session ref")?;
+    let blob_id = session_ref.id().detach();
+
+    let ref_name = refs::patchid_ref(patch_id);
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: format!("dkod: link session {} to patch-id {}", session_id, patch_id)
+                    .into(),
+            },
+            expected: PreviousValue::Any,
+            new: Target::Object(blob_id),
+        },
+        name: ref_name.try_into().context("invalid patch-id ref name")?,
+        deref: false,
+    })
+    .context("edit patch-id ref")?;
+    Ok(())
+}
+
 /// Re-point `refs/dkod/commits/<new_sha>` at whatever session blob
 /// `refs/dkod/commits/<old_sha>` currently points at. Returns `Ok(true)` if the
 /// old ref existed and the new ref was written, `Ok(false)` if the old ref is
@@ -679,5 +716,49 @@ mod tests {
             .find_reference(&crate::refs::session_ref(&b.id))
             .unwrap();
         assert_eq!(new_ref.id(), b_ref.id(), "last relink (sessionB) must win");
+    }
+
+    #[test]
+    fn link_session_to_patchid_writes_ref_pointing_at_session_blob() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+
+        let pid = "1111111111111111111111111111111111111111";
+        link_session_to_patchid(tmp.path(), &s.id, pid).unwrap();
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let pid_ref = repo.find_reference(&crate::refs::patchid_ref(pid)).unwrap();
+        let sess_ref = repo
+            .find_reference(&crate::refs::session_ref(&s.id))
+            .unwrap();
+        assert_eq!(
+            pid_ref.id(),
+            sess_ref.id(),
+            "patchid ref must point at the session blob"
+        );
+    }
+
+    #[test]
+    fn link_session_to_patchid_last_writer_wins() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let a = fixture_session();
+        let mut b = fixture_session();
+        b.id = Session::new_id();
+        write_session(tmp.path(), &a).unwrap();
+        write_session(tmp.path(), &b).unwrap();
+
+        let pid = "2222222222222222222222222222222222222222";
+        link_session_to_patchid(tmp.path(), &a.id, pid).unwrap();
+        link_session_to_patchid(tmp.path(), &b.id, pid).unwrap();
+
+        let repo = gix::open(tmp.path()).unwrap();
+        let pid_ref = repo.find_reference(&crate::refs::patchid_ref(pid)).unwrap();
+        let b_ref = repo
+            .find_reference(&crate::refs::session_ref(&b.id))
+            .unwrap();
+        assert_eq!(pid_ref.id(), b_ref.id(), "last writer (sessionB) must win");
     }
 }
