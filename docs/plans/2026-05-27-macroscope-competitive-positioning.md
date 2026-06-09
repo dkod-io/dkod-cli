@@ -139,12 +139,26 @@ pairs to `dkod relink`, which re-points `refs/dkod/commits/<new>` at the
 session blob — so rebase / `commit --amend` / squash / reword keep their
 provenance and `dkod blame` resolves the rewritten lines.
 
-Remaining residue (documented limitations): `git filter-repo`, externally-
-rewritten history, and history rewritten before `dkod init` are not
-auto-relinked (blame falls back to `(human)`); squash is lossy
-(last-writer-wins — the squashed commit attributes to one session);
-`core.hooksPath` users wire the hook manually; and `dkod show` may list a
-pre-rewrite SHA (re-linking updates refs, not the session blob's commit list).
+A **patch-id fallback** now covers the rewrites the hook never sees
+(`docs/plans/2026-06-09-patchid-fallback-design.md`): at capture, each
+produced commit also gets a `refs/dkod/patchid/<patch-id>` → session ref;
+at blame time, a commit-ref miss falls back to matching the line's commit
+`git patch-id`, which is stable across **diff-preserving** rewrites. So
+history rewritten **before `dkod init`**, rewrites on a **clone without the
+hook**, and `git filter-repo` now recover provenance too (these refs travel
+with the repo via the existing `+refs/dkod/*` refspec). The hook and the
+patch-id fallback are complementary: the hook owns squash and live local
+rewrites; patch-id owns diff-preserving rewrites that bypass it.
+
+Remaining residue (documented limitations): **squash** is lossy
+(last-writer-wins — the squashed commit attributes to one session) and is
+not recoverable by patch-id (its diff changes); **content-changing**
+rewrites are genuinely different work (no attribution, by design); patch-id
+**collisions** (identical diffs) are last-writer-wins; sessions captured
+**before** this shipped have no patch-id ref (a future `dkod reindex` could
+backfill); `core.hooksPath` users wire the hook manually; and `dkod show`
+may list a pre-rewrite SHA (re-linking updates refs, not the session blob's
+commit list).
 
 ### 2. Org session memory *(the company-defining bet)*
 
