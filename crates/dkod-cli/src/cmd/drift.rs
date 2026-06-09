@@ -106,7 +106,10 @@ fn print_listing(s: &dkod_core::Session, verdict: &dkod_core::drift::DriftVerdic
 }
 
 /// `dkod drift [session-id] [--all]`. With a session id, prints that session's
-/// detail; otherwise lists sessions (flagged only, unless `all`). Always Ok.
+/// detail; otherwise lists sessions (flagged only, unless `all`).
+/// Returns Ok for the report itself — drift findings never cause a non-zero
+/// exit (this is a report, not a gate). Genuine errors (not a git repo, an
+/// unknown session id, unreadable config) still propagate and exit non-zero.
 pub fn run(cwd: &Path, session_id: Option<&str>, all: bool) -> Result<()> {
     gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
     let cfg = super::load_config(cwd)?;

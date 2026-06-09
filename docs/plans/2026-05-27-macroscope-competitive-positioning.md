@@ -186,7 +186,7 @@ lockfiles, `*.pem`, `auth*`, … regardless of prompt), **small-ask /
 large-change magnitude** (small-sounding prompt but many files / lines), and
 **unmentioned-file drift** (prompt named paths, agent also changed others).
 `dkod drift` lists flagged sessions; `dkod drift <id>` explains one;
-`--all` includes clean sessions. Always exits 0 (a report, not a gate).
+`--all` includes clean sessions. A flagged session still exits 0 — a report, not a gate (genuine errors still exit non-zero).
 
 Deferred (opt-in, future): an **LLM semantic layer** for subtle same-magnitude
 drift ("fixed login, also refactored payments") — kept off by default and
