@@ -59,13 +59,13 @@ pub fn run(cwd: &Path, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// If `sha` has a `refs/dkod/commits/<sha>` link, resolve the session and return
-/// (agent_label, short_session_id, prompt_summary). Otherwise None.
-fn session_for_commit(cwd: &Path, sha: &str) -> Option<(String, String, String)> {
-    let repo = gix::open(cwd).ok()?;
-    let r = repo
-        .find_reference(&dkod_core::refs::commit_ref(sha))
-        .ok()?;
+/// Decode the session blob a dkod ref points at into the blame annotation
+/// tuple `(agent_label, short_session_id, prompt_summary)`.
+fn session_from_ref_name(
+    repo: &gix::Repository,
+    ref_name: &str,
+) -> Option<(String, String, String)> {
+    let r = repo.find_reference(ref_name).ok()?;
     let obj = repo.find_object(r.id()).ok()?.detach();
     let session: dkod_core::Session = serde_json::from_slice(&obj.data).ok()?;
     let short = session.id.get(..8).unwrap_or(&session.id).to_string();
@@ -74,6 +74,19 @@ fn session_for_commit(cwd: &Path, sha: &str) -> Option<(String, String, String)>
         short,
         session.prompt_summary,
     ))
+}
+
+/// Resolve a blamed commit SHA to its session annotation. Primary: the
+/// `refs/dkod/commits/<sha>` link. Fallback: when that's absent (a rewrite the
+/// post-rewrite hook never observed), match the commit's `git patch-id` against
+/// `refs/dkod/patchid/<patch-id>`, which survives diff-preserving rewrites.
+fn session_for_commit(cwd: &Path, sha: &str) -> Option<(String, String, String)> {
+    let repo = gix::open(cwd).ok()?;
+    if let Some(hit) = session_from_ref_name(&repo, &dkod_core::refs::commit_ref(sha)) {
+        return Some(hit);
+    }
+    let pid = crate::cmd::patchid::compute_patch_id(cwd, sha)?;
+    session_from_ref_name(&repo, &dkod_core::refs::patchid_ref(&pid))
 }
 
 /// Parse `git blame --porcelain` output into one BlameLine per source line.
