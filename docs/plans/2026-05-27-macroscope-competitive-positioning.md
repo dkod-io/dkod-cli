@@ -170,13 +170,29 @@ effects**: its value compounds with every captured session, and it
 cannot be cloned without the corpus. This is the long-term moat and the
 strongest reason dkod is a company and not a feature.
 
-### 3. Intent-vs-output drift *(safety / oversight primitive)*
+### 3. Intent-vs-output drift *(SHIPPED — V1)*
 
 Compare what the prompt asked for against what the agent actually changed
 → flag sessions where the agent did materially more / other than asked
 ("told to fix a typo, also rewrote auth"). Only possible because dkod
 holds prompt and diff together. Feeds the oversight narrative and pairs
 naturally with the privacy/compliance angle of (B).
+
+**Status: implemented** (`docs/plans/2026-06-09-intent-output-drift-design.md`).
+`dkod drift` is a local, rule-based, zero-network command that computes
+on-read over stored sessions and reports structured reasons. Three v1
+heuristics: a **sensitive-path tripwire** (touched `.github/workflows/`,
+lockfiles, `*.pem`, `auth*`, … regardless of prompt), **small-ask /
+large-change magnitude** (small-sounding prompt but many files / lines), and
+**unmentioned-file drift** (prompt named paths, agent also changed others).
+`dkod drift` lists flagged sessions; `dkod drift <id>` explains one;
+`--all` includes clean sessions. Always exits 0 (a report, not a gate).
+
+Deferred (opt-in, future): an **LLM semantic layer** for subtle same-magnitude
+drift ("fixed login, also refactored payments") — kept off by default and
+behind the user's own key, since sending prompt+diff to a model would cut
+against the "transcripts never leave your git host" pitch. The rule-based v1
+needs no network and no API key, so it stays true to (B).
 
 ### Parked (revisit later)
 
