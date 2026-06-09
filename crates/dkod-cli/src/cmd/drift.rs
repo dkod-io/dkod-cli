@@ -26,9 +26,23 @@ fn parse_numstat(out: &str) -> (usize, usize, usize) {
         if path.is_empty() {
             continue;
         }
+        let ai = if a == "-" {
+            Some(0)
+        } else {
+            a.parse::<usize>().ok()
+        };
+        let bd = if b == "-" {
+            Some(0)
+        } else {
+            b.parse::<usize>().ok()
+        };
+        let (ai, bd) = match (ai, bd) {
+            (Some(ai), Some(bd)) => (ai, bd),
+            _ => continue, // malformed counts → not a real numstat row
+        };
         files += 1;
-        ins += a.parse::<usize>().unwrap_or(0); // "-" (binary) → 0
-        del += b.parse::<usize>().unwrap_or(0);
+        ins += ai;
+        del += bd;
     }
     (files, ins, del)
 }
@@ -123,11 +137,16 @@ pub fn run(cwd: &Path, session_id: Option<&str>, all: bool) -> Result<()> {
         return Ok(());
     }
 
-    let mut sessions: Vec<dkod_core::Session> = dkod_core::store::list_sessions(cwd)
-        .map_err(|e| anyhow!("list sessions: {e:#}"))?
-        .into_iter()
-        .filter_map(|id| dkod_core::store::read_session(cwd, &id).ok())
-        .collect();
+    let mut sessions: Vec<dkod_core::Session> = Vec::new();
+    for id in dkod_core::store::list_sessions(cwd).map_err(|e| anyhow!("list sessions: {e:#}"))? {
+        match dkod_core::store::read_session(cwd, &id) {
+            Ok(s) => sessions.push(s),
+            // Resilient scan (like `dkod log`), but surface the problem rather
+            // than dropping it silently — a corrupt session shouldn't abort the
+            // whole drift report nor vanish without a trace.
+            Err(e) => eprintln!("dkod drift: skipping unreadable session {id}: {e:#}"),
+        }
+    }
     sessions.sort_by(|a, b| {
         b.created_at
             .cmp(&a.created_at)
@@ -168,6 +187,11 @@ mod tests {
     #[test]
     fn ignores_malformed_lines() {
         let out = "garbage line with no tabs\n2\t2\tok.rs\n";
+        assert_eq!(parse_numstat(out), (1, 2, 2));
+    }
+    #[test]
+    fn skips_rows_with_nonnumeric_counts() {
+        let out = "x\ty\tweird.rs\n2\t2\tok.rs\n";
         assert_eq!(parse_numstat(out), (1, 2, 2));
     }
 }
