@@ -265,6 +265,12 @@ mod glob_tests {
         assert!(glob_match("src/*.rs", "src/a.rs"));
         assert!(!glob_match("src/*.rs", "src/a/b.rs"));
     }
+    #[test]
+    fn middle_double_star() {
+        assert!(glob_match("**/migrations/**", "db/migrations/001_init.sql"));
+        assert!(glob_match("**/migrations/**", "migrations/x.sql"));
+        assert!(!glob_match("**/migrations/**", "db/models/user.rs"));
+    }
 }
 
 #[cfg(test)]
@@ -375,5 +381,33 @@ mod analyze_tests {
             &[".github/workflows/ci.yml", "a.rs", "b.rs", "c.rs", "d.rs"],
         );
         assert!(analyze(&s, None, &cfg).is_clean());
+    }
+    #[test]
+    fn intent_falls_back_to_prompt_summary_when_no_user_messages() {
+        // No User messages → intent comes from prompt_summary. "fix typo" is a
+        // small-ask keyword, 5 files is a large change → magnitude fires.
+        let s = Session {
+            id: "0192f8e2-7b3a-7000-8a3e-000000000002".into(),
+            agent: Agent::ClaudeCode,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "fix typo".into(),
+            messages: vec![], // no user content
+            commits: vec![],
+            files_touched: vec!["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        };
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.reasons.iter().any(|r| r.rule == "magnitude"),
+            "prompt_summary fallback should drive the small-ask signal"
+        );
+    }
+    #[test]
+    fn empty_files_touched_is_clean() {
+        let s = session("fix typo", &[]);
+        assert!(analyze(&s, None, &DriftConfig::default()).is_clean());
     }
 }
