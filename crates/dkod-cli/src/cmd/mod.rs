@@ -2,6 +2,7 @@ pub mod blame;
 pub mod capture;
 pub mod drift;
 pub mod export;
+pub mod import;
 pub mod init;
 pub mod log;
 pub mod patchid;

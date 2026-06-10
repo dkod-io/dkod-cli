@@ -44,6 +44,17 @@ dkod drift <id> --card # shareable boxed card for one session
 dkod export agent-trace [<id>]  # sessions as Agent Trace records (docs/agent-trace.md)
 ```
 
+### Import existing transcripts
+
+Claude Code deletes local transcripts after ~30 days. Rescue them (and your
+Codex rollouts) into permanent git refs — works in any git repo, no setup
+needed, redacted like live captures, idempotent to re-run:
+
+```sh
+dkod import claude-code   # ~/.claude/projects/<this repo>/*.jsonl
+dkod import codex         # ~/.codex/sessions rollouts recorded in this repo
+```
+
 `dkod init` also writes a `.dkod.toml` breadcrumb at the repo root, so
 teammates browsing the repo learn the session history exists. After cloning,
 they run `dkod init` once — it detects existing sessions on `origin` and
