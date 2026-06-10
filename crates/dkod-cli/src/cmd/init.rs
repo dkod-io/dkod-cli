@@ -18,6 +18,15 @@ const POST_REWRITE_SENTINEL: &str = "# dkod-managed: re-link sessions after hist
 const POST_REWRITE_SCRIPT: &str =
     "#!/bin/sh\n# dkod-managed: re-link sessions after history rewrite\nexec dkod relink\n";
 
+/// Breadcrumb dropped at the repo root so anyone browsing the repo (or its
+/// file listing on a forge) discovers that dkod session history exists and
+/// how to fetch it. Comment-only, hence valid TOML.
+const BREADCRUMB_CONTENT: &str = "\
+# This repository uses dkod — AI agent sessions are captured as git refs
+# (refs/dkod/sessions/*) on the remote. Run `dkod init` after cloning to
+# fetch and browse them: https://github.com/dkod-io/dkod-cli
+";
+
 pub fn run(cwd: &Path) -> Result<()> {
     // 1. Ensure we're inside (or under) a git repo. `gix::discover`
     //    walks up from `cwd` so `dkod init` works whether the user
@@ -53,7 +62,21 @@ pub fn run(cwd: &Path) -> Result<()> {
     //    duplicating it on remotes that already have it.
     ensure_dkod_refspec(cwd)?;
 
-    // 4. Install Claude Code hooks at init time so the user gets
+    // 4. Session discovery (the clone-side half of the in-repo viral
+    //    loop): if origin already advertises captured sessions, say so
+    //    and fetch them. Entirely best-effort — a repo with no `origin`,
+    //    a dead network, or a failing fetch must never break init.
+    discover_remote_sessions(cwd);
+
+    // 5. Drop a `.dkod.toml` breadcrumb at the repo root so teammates
+    //    who browse the repo discover the captured session history.
+    //    Non-fatal: init still succeeds if the file can't be written
+    //    (e.g. read-only checkout).
+    if let Err(e) = write_breadcrumb(cwd) {
+        eprintln!("dkod init: could not write .dkod.toml breadcrumb: {e:#}");
+    }
+
+    // 6. Install Claude Code hooks at init time so the user gets
     //    capture wired up just by running `dkod init` (issue #6 phase
     //    1). The current V1 path still requires a separate
     //    `dkod capture claude-code` to start the long-lived server;
@@ -82,6 +105,82 @@ pub fn run(cwd: &Path) -> Result<()> {
         eprintln!("dkod init: could not install post-rewrite hook: {e:#}");
     }
 
+    Ok(())
+}
+
+/// Count `refs/dkod/sessions/*` on `origin` and, when any exist, announce
+/// them and fetch the whole `refs/dkod/*` namespace. Only session refs are
+/// counted — `refs/dkod/commits/*` and `refs/dkod/patchid/*` are per-commit
+/// aliases, not sessions, and would inflate the number.
+///
+/// Best-effort by design: every failure path (no remote named `origin`,
+/// network down, auth refused, fetch failure) returns quietly or warns on
+/// stderr; none of them may fail `dkod init`.
+fn discover_remote_sessions(cwd: &Path) {
+    let out = match Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-remote", "origin", "refs/dkod/sessions/*"])
+        .output()
+    {
+        Ok(o) => o,
+        // Couldn't even spawn git — earlier init steps already shelled out
+        // to git successfully, so this is vanishingly unlikely; stay silent.
+        Err(_) => return,
+    };
+    if !out.status.success() {
+        // "No such remote 'origin'", network/auth failure, etc. Discovery
+        // is opportunistic, so silence is the contract here.
+        return;
+    }
+    let count = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    if count == 0 {
+        return;
+    }
+
+    println!(
+        "dkod: this repo already has {count} captured agent session(s) on origin — fetching..."
+    );
+    match Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["fetch", "--quiet", "origin", DKOD_FETCH_REFSPEC])
+        .output()
+    {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => eprintln!(
+            "dkod init: fetching refs/dkod/* from origin failed (run \
+             `git fetch origin '{DKOD_FETCH_REFSPEC}'` manually): {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => eprintln!(
+            "dkod init: fetching refs/dkod/* from origin failed (run \
+             `git fetch origin '{DKOD_FETCH_REFSPEC}'` manually): {e}"
+        ),
+    }
+}
+
+/// Write the `.dkod.toml` breadcrumb at the repo root (NOT `cwd` — `dkod
+/// init` may run from a subdirectory). Idempotent: an existing file is
+/// never touched, whatever its content, so users can customize it.
+fn write_breadcrumb(cwd: &Path) -> Result<()> {
+    let repo = gix::discover(cwd).map_err(|_| anyhow!("not a git repo"))?;
+    let root = repo
+        .work_dir()
+        .ok_or_else(|| anyhow!("bare repo — no working directory for a breadcrumb"))?
+        .to_path_buf();
+    let path = root.join(".dkod.toml");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&path, BREADCRUMB_CONTENT)
+        .with_context(|| format!("write {}", path.display()))?;
+    println!(
+        "dkod: wrote .dkod.toml breadcrumb — commit it so teammates discover the session history."
+    );
     Ok(())
 }
 
