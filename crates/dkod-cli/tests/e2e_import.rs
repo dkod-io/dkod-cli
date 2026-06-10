@@ -352,3 +352,75 @@ fn import_codex_rescues_rollouts_idempotently() {
         "re-import should skip the already-captured rollout: {stdout}"
     );
 }
+
+// --- subdirectory invocation (worktree-root resolution) ---------------------
+
+#[test]
+fn import_claude_code_from_subdirectory_resolves_repo_root() {
+    // `dkod import` run from a nested path must behave exactly like a run
+    // from the repo root: the Claude project-dir mapping is computed from
+    // the WORKTREE ROOT, not the caller's cwd.
+    let repo = tempfile::TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let subdir = repo.path().join("src/deeply/nested");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let claude_root = tempfile::TempDir::new().unwrap();
+    // Seeded under the ROOT's mapped name — a cwd-based mapping would miss it.
+    seed_claude_transcript(
+        claude_root.path(),
+        repo.path(),
+        CLAUDE_SESSION_ID,
+        &claude_transcript_jsonl(),
+    );
+
+    let out = Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&subdir)
+        .env("DKOD_CLAUDE_DIR", claude_root.path())
+        .args(["import", "claude-code"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("imported 1 session(s), skipped 0"),
+        "subdir run should import like a root run: {stdout}"
+    );
+    assert!(
+        dkod_core::store::read_session(repo.path(), CLAUDE_SESSION_ID).is_ok(),
+        "session ref must land in the repo regardless of invocation cwd"
+    );
+}
+
+#[test]
+fn import_codex_from_subdirectory_keeps_repo_root_scope() {
+    // The Codex cwd-inside-repo filter must compare against the WORKTREE
+    // ROOT: a rollout recorded at the repo root is in scope even when the
+    // import runs from a subdirectory.
+    let repo = tempfile::TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let subdir = repo.path().join("src");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let sessions = tempfile::TempDir::new().unwrap();
+    let canonical_repo = repo.path().canonicalize().unwrap();
+    seed_codex_rollout(
+        sessions.path(),
+        CODEX_THREAD_ID,
+        &codex_rollout_jsonl(CODEX_THREAD_ID, &canonical_repo),
+    );
+
+    let out = Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&subdir)
+        .args(["import", "codex", "--dir"])
+        .arg(sessions.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("imported 1 session(s), skipped 0"),
+        "root-recorded rollout must be in scope from a subdir run: {stdout}"
+    );
+    assert!(dkod_core::store::read_session(repo.path(), CODEX_THREAD_ID).is_ok());
+}

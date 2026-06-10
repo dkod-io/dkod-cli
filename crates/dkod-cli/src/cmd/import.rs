@@ -55,29 +55,43 @@ fn print_summary(o: &Outcome) {
     );
 }
 
+/// Resolve the repo WORKTREE ROOT from any cwd inside it (same
+/// `gix::discover` + `work_dir` approach `dkod init` uses for the
+/// breadcrumb). `dkod import` from a subdirectory must behave identically
+/// to a run from the root: same `.dkod/config.toml`, same Claude
+/// project-dir mapping, same Codex repo-scope filter, refs written to the
+/// same repo.
+fn worktree_root(cwd: &Path) -> Result<PathBuf> {
+    let repo = gix::discover(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
+    Ok(repo
+        .work_dir()
+        .ok_or_else(|| anyhow!("bare repo — dkod import needs a working directory"))?
+        .to_path_buf())
+}
+
 /// `dkod import claude-code [--project <dir>]`.
 pub fn run_claude_code(cwd: &Path, project: Option<&Path>) -> Result<()> {
-    gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
-    let cfg = super::load_config(cwd)?;
+    let root = worktree_root(cwd)?;
+    let cfg = super::load_config(&root)?;
     let source = match project {
         Some(p) => p.to_path_buf(),
-        None => default_claude_source_dir(cwd)?,
+        None => default_claude_source_dir(&root)?,
     };
-    let outcome = import_claude_dir(cwd, &source, &cfg);
+    let outcome = import_claude_dir(&root, &source, &cfg);
     print_summary(&outcome);
     Ok(())
 }
 
 /// `dkod import codex [--dir <dir>]`.
 pub fn run_codex(cwd: &Path, dir: Option<&Path>) -> Result<()> {
-    gix::open(cwd).map_err(|_| anyhow!("not a git repo (run `git init` first)"))?;
-    let cfg = super::load_config(cwd)?;
+    let root = worktree_root(cwd)?;
+    let cfg = super::load_config(&root)?;
     let source = match dir {
         Some(p) => p.to_path_buf(),
         None => default_codex_sessions_dir()?,
     };
-    let repo_scope = canonical_or_self(cwd);
-    let outcome = import_codex_dir(cwd, &source, &cfg, &repo_scope);
+    let repo_scope = canonical_or_self(&root);
+    let outcome = import_codex_dir(&root, &source, &cfg, &repo_scope);
     print_summary(&outcome);
     Ok(())
 }
@@ -88,7 +102,7 @@ pub fn run_codex(cwd: &Path, dir: Option<&Path>) -> Result<()> {
 /// unless `DKOD_CLAUDE_DIR` overrides it (documented test/nonstandard-install
 /// hook). The repo path is canonicalized first because Claude Code records
 /// the physical cwd (macOS tempdir symlinks, etc.).
-fn default_claude_source_dir(cwd: &Path) -> Result<PathBuf> {
+fn default_claude_source_dir(repo_root: &Path) -> Result<PathBuf> {
     let root = match std::env::var_os("DKOD_CLAUDE_DIR") {
         Some(d) => PathBuf::from(d),
         None => dirs::home_dir()
@@ -97,7 +111,7 @@ fn default_claude_source_dir(cwd: &Path) -> Result<PathBuf> {
     };
     Ok(root
         .join("projects")
-        .join(claude_project_dir_name(&canonical_or_self(cwd))))
+        .join(claude_project_dir_name(&canonical_or_self(repo_root))))
 }
 
 /// `$CODEX_HOME/sessions`, default `~/.codex/sessions` — same resolution
@@ -332,7 +346,7 @@ fn import_codex_dir(
     }
     files.sort();
 
-    let existing = existing_session_ids(repo);
+    let mut existing = existing_session_ids(repo);
     let mut other_project = 0usize;
     for path in files {
         let meta = rollout_meta(&path);
@@ -349,7 +363,9 @@ fn import_codex_dir(
             continue;
         };
         if let Some(cwd) = &meta.cwd {
-            if !cwd.starts_with(repo_scope) {
+            // Normalize the recorded cwd (symlinked tempdirs, /var vs
+            // /private/var) before comparing against the repo scope.
+            if !canonical_or_self(cwd).starts_with(repo_scope) {
                 other_project += 1;
                 continue;
             }
@@ -368,6 +384,10 @@ fn import_codex_dir(
         };
         if store_imported(repo, cfg, session, &id, &path) {
             out.imported += 1;
+            // Two rollout files can resolve to the same thread id within
+            // one scan (e.g. a resumed session). Record the id so the
+            // later file is skipped instead of double-imported.
+            existing.insert(id);
         } else {
             out.skipped += 1;
         }
@@ -578,6 +598,40 @@ mod tests {
                 skipped: 1
             }
         );
+    }
+
+    #[test]
+    fn import_codex_dir_dedupes_same_thread_id_within_one_run() {
+        // Two rollout files resolving to the SAME thread id (e.g. a resumed
+        // session re-logged under a new timestamp) must not both import:
+        // the first write wins, the second counts as already captured.
+        let repo = init_repo();
+        let scope = canonical_or_self(repo.path());
+        let src = tempfile::TempDir::new().unwrap();
+        let day = src.path().join("2026/05/03");
+        std::fs::create_dir_all(&day).unwrap();
+        let scope_str = scope.display().to_string();
+        std::fs::write(
+            day.join(format!("rollout-2026-05-03T12-00-00-{CODEX_ID}.jsonl")),
+            codex_fixture(CODEX_ID, &scope_str),
+        )
+        .unwrap();
+        std::fs::write(
+            day.join(format!("rollout-2026-05-03T13-00-00-{CODEX_ID}.jsonl")),
+            codex_fixture(CODEX_ID, &scope_str),
+        )
+        .unwrap();
+
+        let out = import_codex_dir(repo.path(), src.path(), &cfg(), &scope);
+        assert_eq!(
+            out,
+            Outcome {
+                imported: 1,
+                skipped: 1
+            },
+            "duplicate thread id in one scan must import once and skip once"
+        );
+        assert!(dkod_core::store::read_session(repo.path(), CODEX_ID).is_ok());
     }
 
     #[test]
