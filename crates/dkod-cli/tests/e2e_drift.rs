@@ -116,6 +116,44 @@ fn drift_flags_sensitive_path_and_hides_clean() {
         "single clean session should report clean:\n{stdout}"
     );
 
+    // --card on the drifting session renders the shareable box.
+    let out = AssertCommand::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["drift", &drift_id, "--card"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains('╭') && stdout.contains('╯'),
+        "card should be boxed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("⚠ sensitive-path"),
+        "card should carry the reason badge:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ASKED: \"fix the typo in the readme\""),
+        "card should quote the ask:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dkod — the git-native flight recorder for AI agents"),
+        "card should carry the footer:\n{stdout}"
+    );
+    // Piped stdout (not a tty) → no ANSI escapes in the card.
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "non-tty card must be ANSI-free:\n{stdout}"
+    );
+
+    // --card without a session id is a usage error (clap `requires`).
+    AssertCommand::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["drift", "--card"])
+        .assert()
+        .failure();
+
     // --all shows both.
     let out = AssertCommand::cargo_bin("dkod")
         .unwrap()
