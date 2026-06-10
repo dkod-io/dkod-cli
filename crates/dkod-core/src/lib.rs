@@ -7,4 +7,5 @@ pub mod redact;
 pub mod refs;
 pub mod session;
 pub mod store;
+pub mod trace;
 pub use session::*;
