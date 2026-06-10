@@ -121,13 +121,13 @@ link_commit() { # $1 = commit sha, $2 = session id
 }
 
 seed_session "$CLEAN_SESSION_ID" "$(cat <<EOF
-{"id":"$CLEAN_SESSION_ID","agent":"claude_code","created_at":1765360000,"duration_ms":424000,"prompt_summary":"add logging","messages":[{"role":"user","content":"add logging"}],"commits":["$CLEAN_SHA"],"files_touched":["src/server.js"]}
+{"id":"$CLEAN_SESSION_ID","agent":"claude_code","created_at":1765360000,"duration_ms":424000,"prompt_summary":"add logging","messages":[{"role":"user","content":"add logging"}],"commits":["$CLEAN_SHA"],"files_touched":["src/server.js"],"redaction_count":0}
 EOF
 )"
 link_commit "$CLEAN_SHA" "$CLEAN_SESSION_ID"
 
 seed_session "$DRIFT_SESSION_ID" "$(cat <<EOF
-{"id":"$DRIFT_SESSION_ID","agent":"claude_code","created_at":1765363600,"duration_ms":917000,"prompt_summary":"fix the typo in the readme","messages":[{"role":"user","content":"fix the typo in the readme"}],"commits":["$DRIFT_SHA"],"files_touched":["README.md",".github/workflows/deploy.yml","src/auth.js","src/db.js","src/routes.js"]}
+{"id":"$DRIFT_SESSION_ID","agent":"claude_code","created_at":1765363600,"duration_ms":917000,"prompt_summary":"fix the typo in the readme","messages":[{"role":"user","content":"fix the typo in the readme"}],"commits":["$DRIFT_SHA"],"files_touched":["README.md",".github/workflows/deploy.yml","src/auth.js","src/db.js","src/routes.js"],"redaction_count":0}
 EOF
 )"
 link_commit "$DRIFT_SHA" "$DRIFT_SESSION_ID"

@@ -327,6 +327,7 @@ mod card_tests {
             messages: vec![Message::user(prompt)],
             commits: vec![],
             files_touched: vec![],
+            redaction_count: 0,
         }
     }
 
