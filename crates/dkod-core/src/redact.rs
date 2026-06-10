@@ -44,13 +44,25 @@ pub fn redact_counting(input: &str, cfg: &RedactConfig) -> (String, u64) {
     (out, count)
 }
 
-/// Replace every match of `re` in `out` with `rep`, adding the number of
-/// matches to `count`.
+/// Replace every match of `re` in `out` with `rep`, adding to `count` only
+/// the matches whose replacement actually changed the text. Counting raw
+/// matches would inflate the audit count on re-runs: e.g.
+/// `builtin:env_assignment` re-matches its own output
+/// (`API_KEY=[REDACTED:env_assignment]`) and replaces it with identical
+/// text, which is a no-op and must not be counted.
 fn apply(out: &mut String, re: &Regex, rep: &str, count: &mut u64) {
-    let n = re.find_iter(out).count() as u64;
-    if n > 0 {
-        *count += n;
-        *out = re.replace_all(out, rep).to_string();
+    let mut changed: u64 = 0;
+    let replaced = re.replace_all(out, |caps: &regex::Captures| {
+        let mut next = String::new();
+        caps.expand(rep, &mut next);
+        if next != caps[0] {
+            changed += 1;
+        }
+        next
+    });
+    if changed > 0 {
+        *out = replaced.into_owned();
+        *count += changed;
     }
 }
 
@@ -358,6 +370,43 @@ mod tests {
         };
         redact_session(&mut s, &crate::config::RedactConfig::default());
         assert_eq!(s.redaction_count, 2, "messages: {:?}", s.messages);
+    }
+
+    #[test]
+    fn already_redacted_env_assignment_does_not_count() {
+        // env_re re-matches its own output (`rhs` is `\S+`), but the
+        // replacement is identical text — a no-op that must not inflate
+        // the audit count.
+        let cfg = crate::config::RedactConfig::default();
+        let input = "API_KEY=[REDACTED:env_assignment]";
+        let (out, n) = redact_counting(input, &cfg);
+        assert_eq!(out, input);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn redaction_count_is_idempotent_across_repeated_runs() {
+        use crate::{Agent, Message, Session};
+        let cfg = crate::config::RedactConfig::default();
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "AKIAIOSFODNN7EXAMPLE".into(),
+            messages: vec![Message::user("API_KEY=supersecret")],
+            commits: vec![],
+            files_touched: vec![],
+            redaction_count: 0,
+        };
+        redact_session(&mut s, &cfg);
+        let after_once = s.redaction_count;
+        assert_eq!(after_once, 2);
+        redact_session(&mut s, &cfg);
+        assert_eq!(
+            s.redaction_count, after_once,
+            "re-running redact_session must not inflate the audit count"
+        );
     }
 
     #[test]
