@@ -96,6 +96,7 @@ fn full_lifecycle_through_git_push_and_fetch() {
         ],
         commits: vec![],
         files_touched: vec![],
+        redaction_count: 0,
     };
     dkod_core::store::write_session(&work, &session).unwrap();
     let sid = session.id.clone();

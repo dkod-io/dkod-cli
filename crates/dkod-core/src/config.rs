@@ -25,6 +25,7 @@ impl Default for RedactConfig {
                 "builtin:openai_key".into(),
                 "builtin:stripe".into(),
                 "builtin:env_assignment".into(),
+                "builtin:entropy".into(),
             ],
             custom: vec![],
         }
@@ -130,6 +131,7 @@ mod tests {
             .redact
             .patterns
             .contains(&"builtin:env_assignment".to_string()));
+        assert!(c.redact.patterns.contains(&"builtin:entropy".to_string()));
     }
 
     #[test]

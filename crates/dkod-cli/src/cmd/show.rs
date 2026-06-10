@@ -18,6 +18,9 @@ pub fn run(cwd: &Path, id: &str) -> Result<()> {
     if !s.files_touched.is_empty() {
         println!("files   {}", s.files_touched.join(", "));
     }
+    if s.redaction_count > 0 {
+        println!("redactions: {}", s.redaction_count);
+    }
     println!();
     for m in &s.messages {
         match m {

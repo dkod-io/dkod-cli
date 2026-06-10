@@ -3,35 +3,133 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 pub fn redact(input: &str, cfg: &RedactConfig) -> String {
+    redact_counting(input, cfg).0
+}
+
+/// Like [`redact`], but also returns how many replacements were made
+/// (across builtins, the entropy rule, and custom patterns). Feeds the
+/// per-session audit count (`Session::redaction_count`).
+pub fn redact_counting(input: &str, cfg: &RedactConfig) -> (String, u64) {
     if !cfg.enabled {
-        return input.to_string();
+        return (input.to_string(), 0);
     }
     let mut out = input.to_string();
+    let mut count: u64 = 0;
     for p in &cfg.patterns {
-        out = match p.as_str() {
-            "builtin:aws" => aws_re().replace_all(&out, "[REDACTED:aws]").to_string(),
-            "builtin:github_token" => github_re()
-                .replace_all(&out, "[REDACTED:github_token]")
-                .to_string(),
-            "builtin:openai_key" => openai_re()
-                .replace_all(&out, "[REDACTED:openai_key]")
-                .to_string(),
-            "builtin:stripe" => stripe_re()
-                .replace_all(&out, "[REDACTED:stripe]")
-                .to_string(),
-            "builtin:env_assignment" => env_re()
-                .replace_all(&out, "${lhs}[REDACTED:env_assignment]")
-                .to_string(),
-            _ => out,
-        };
+        match p.as_str() {
+            "builtin:aws" => apply(&mut out, aws_re(), "[REDACTED:aws]", &mut count),
+            "builtin:github_token" => {
+                apply(&mut out, github_re(), "[REDACTED:github_token]", &mut count)
+            }
+            "builtin:openai_key" => {
+                apply(&mut out, openai_re(), "[REDACTED:openai_key]", &mut count)
+            }
+            "builtin:stripe" => apply(&mut out, stripe_re(), "[REDACTED:stripe]", &mut count),
+            "builtin:env_assignment" => apply(
+                &mut out,
+                env_re(),
+                "${lhs}[REDACTED:env_assignment]",
+                &mut count,
+            ),
+            "builtin:entropy" => out = redact_entropy(&out, &mut count),
+            _ => {}
+        }
     }
     for custom in &cfg.custom {
         match Regex::new(custom) {
-            Ok(re) => out = re.replace_all(&out, "[REDACTED:custom]").to_string(),
+            Ok(re) => apply(&mut out, &re, "[REDACTED:custom]", &mut count),
             Err(e) => eprintln!("dkod: invalid custom redact pattern {custom:?}: {e}"),
         }
     }
-    out
+    (out, count)
+}
+
+/// Replace every match of `re` in `out` with `rep`, adding the number of
+/// matches to `count`.
+fn apply(out: &mut String, re: &Regex, rep: &str, count: &mut u64) {
+    let n = re.find_iter(out).count() as u64;
+    if n > 0 {
+        *count += n;
+        *out = re.replace_all(out, rep).to_string();
+    }
+}
+
+// --- entropy-based generic credential detection -------------------------
+//
+// Catches credentials the shape-specific builtins miss (random API keys,
+// signing secrets, bearer tokens in unusual formats) by flagging long
+// character runs whose per-char Shannon entropy looks machine-generated.
+
+/// Minimum candidate length. Shorter runs don't carry enough signal to
+/// separate secrets from ordinary identifiers, and real secrets are
+/// almost always >= 24 chars.
+const ENTROPY_MIN_LEN: usize = 24;
+
+/// Per-char Shannon entropy threshold in bits. Hex tops out at 4.0 bits
+/// (log2 16), so git SHAs and hex digests always stay below; random
+/// base64 averages ~4.6-5.6 bits at these lengths; English text sits
+/// around 3-4. 4.2 splits the two populations cleanly.
+const ENTROPY_THRESHOLD_BITS: f64 = 4.2;
+
+fn entropy_candidate_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // Base64/base64url/hex-style alphabet, including `+/=` padding chars.
+    RE.get_or_init(|| Regex::new(&format!(r"[A-Za-z0-9+/=_\-]{{{ENTROPY_MIN_LEN},}}")).unwrap())
+}
+
+fn redact_entropy(input: &str, count: &mut u64) -> String {
+    entropy_candidate_re()
+        .replace_all(input, |caps: &regex::Captures| {
+            let tok = &caps[0];
+            if entropy_skip(tok) || shannon_entropy_per_char(tok) < ENTROPY_THRESHOLD_BITS {
+                tok.to_string()
+            } else {
+                *count += 1;
+                "[REDACTED:entropy]".to_string()
+            }
+        })
+        .to_string()
+}
+
+/// Clear false-positive classes the entropy rule must never touch.
+fn entropy_skip(tok: &str) -> bool {
+    // Git object ids (SHA-1 / SHA-256) legitimately appear in transcripts.
+    // The 4.2-bit threshold already excludes hex (max 4.0 bits), but keep
+    // an explicit guard so threshold tuning can never redact a SHA.
+    let all_hex = tok.bytes().all(|b| b.is_ascii_hexdigit());
+    if all_hex && (tok.len() == 40 || tok.len() == 64) {
+        return true;
+    }
+    // Long numbers (ids, timestamps, order numbers) are not secrets.
+    if tok.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    // Two or more `/` chars: overwhelmingly file paths, not base64.
+    if tok.bytes().filter(|&b| b == b'/').count() >= 2 {
+        return true;
+    }
+    false
+}
+
+/// Per-char Shannon entropy in bits. Candidates are ASCII by construction,
+/// so byte-level frequencies are exact.
+fn shannon_entropy_per_char(s: &str) -> f64 {
+    let len = s.len();
+    if len == 0 {
+        return 0.0;
+    }
+    let mut counts = [0usize; 256];
+    for b in s.bytes() {
+        counts[b as usize] += 1;
+    }
+    counts
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / len as f64;
+            -p * p.log2()
+        })
+        .sum()
 }
 
 fn aws_re() -> &'static Regex {
@@ -66,38 +164,49 @@ fn env_re() -> &'static Regex {
 /// Apply redaction to every text-bearing field of a `Session` in place.
 /// Walks `prompt_summary` and each `Message` variant.
 /// Tool inputs are JSON values; we redact every JSON string we encounter recursively.
+/// Every replacement made increments `Session::redaction_count` (the audit count).
 pub fn redact_session(s: &mut crate::Session, cfg: &RedactConfig) {
     if !cfg.enabled {
         return;
     }
-    s.prompt_summary = redact(&s.prompt_summary, cfg);
+    let mut count: u64 = 0;
+    redact_field(&mut s.prompt_summary, cfg, &mut count);
     for m in &mut s.messages {
         match m {
             crate::Message::User { content }
             | crate::Message::Assistant { content }
-            | crate::Message::Reasoning { content } => {
-                *content = redact(content, cfg);
-            }
+            | crate::Message::Reasoning { content } => redact_field(content, cfg, &mut count),
             crate::Message::Tool { input, output, .. } => {
-                redact_json(input, cfg);
-                *output = redact(output, cfg);
+                redact_json(input, cfg, &mut count);
+                redact_field(output, cfg, &mut count);
             }
         }
     }
+    s.redaction_count += count;
 }
 
-fn redact_json(value: &mut serde_json::Value, cfg: &RedactConfig) {
+fn redact_field(text: &mut String, cfg: &RedactConfig, count: &mut u64) {
+    let (redacted, n) = redact_counting(text, cfg);
+    *text = redacted;
+    *count += n;
+}
+
+fn redact_json(value: &mut serde_json::Value, cfg: &RedactConfig, count: &mut u64) {
     use serde_json::Value;
     match value {
-        Value::String(s) => *s = redact(s, cfg),
+        Value::String(s) => {
+            let (redacted, n) = redact_counting(s, cfg);
+            *s = redacted;
+            *count += n;
+        }
         Value::Array(arr) => {
             for v in arr {
-                redact_json(v, cfg);
+                redact_json(v, cfg, count);
             }
         }
         Value::Object(map) => {
             for (_k, v) in map.iter_mut() {
-                redact_json(v, cfg);
+                redact_json(v, cfg, count);
             }
         }
         _ => {}
@@ -170,6 +279,87 @@ mod tests {
         assert!(r("export DB_PASS=hunter2").contains("[REDACTED:env_assignment]"));
     }
 
+    // --- entropy rule -------------------------------------------------
+
+    #[test]
+    #[rustfmt::skip]
+    fn entropy_redacts_random_base64_secret_keeping_surrounding_text() {
+        use crate::{Agent, Message, Session};
+        let secret = "kJ8mN2pQ7rX4vB9zL5wY3tG6hD0fS1aC"; // gitleaks:allow
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "ok".into(),
+            messages: vec![Message::user(format!("use token {secret} please"))],
+            commits: vec![],
+            files_touched: vec![],
+            redaction_count: 0,
+        };
+        redact_session(&mut s, &crate::config::RedactConfig::default());
+        if let Message::User { content } = &s.messages[0] {
+            assert!(content.contains("[REDACTED:entropy]"), "not redacted: {content}");
+            assert!(content.starts_with("use token "));
+            assert!(content.ends_with(" please"));
+            assert!(!content.contains(secret));
+        } else {
+            panic!("expected User message");
+        }
+        assert_eq!(s.redaction_count, 1);
+    }
+
+    #[test]
+    fn entropy_keeps_git_shas() {
+        // git object ids legitimately appear in transcripts; all-hex strings
+        // of exactly 40 (SHA-1) or 64 (SHA-256) chars are never entropy hits.
+        let sha1 = "3c28886a1b2c3d4e5f60718293a4b5c6d7e8f901";
+        assert_eq!(r(sha1), sha1);
+        let sha256 = "3c28886a1b2c3d4e5f60718293a4b5c6d7e8f9013c28886a1b2c3d4e5f60718a";
+        assert_eq!(r(sha256), sha256);
+    }
+
+    #[test]
+    fn entropy_keeps_low_entropy_english_runs() {
+        let input = "this perfectly-normal-english-sentence-fragment stays intact";
+        assert_eq!(r(input), input);
+    }
+
+    #[test]
+    fn entropy_keeps_path_like_tokens() {
+        let input = "see src/kJ8mN2pQ7rX4/vB9zL5wY3tG6hD0 for details";
+        assert_eq!(r(input), input);
+    }
+
+    #[test]
+    fn entropy_keeps_all_digit_runs() {
+        let input = "order id 123456789012345678901234567890 confirmed";
+        assert_eq!(r(input), input);
+    }
+
+    // --- audit count ---------------------------------------------------
+
+    #[test]
+    #[rustfmt::skip]
+    fn redaction_count_accumulates_across_rules() {
+        use crate::{Agent, Message, Session};
+        let aws = "AKIAIOSFODNN7EXAMPLE"; // gitleaks:allow
+        let secret = "kJ8mN2pQ7rX4vB9zL5wY3tG6hD0fS1aC"; // gitleaks:allow
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "ok".into(),
+            messages: vec![Message::user(format!("key {aws} and token {secret}"))],
+            commits: vec![],
+            files_touched: vec![],
+            redaction_count: 0,
+        };
+        redact_session(&mut s, &crate::config::RedactConfig::default());
+        assert_eq!(s.redaction_count, 2, "messages: {:?}", s.messages);
+    }
+
     #[test]
     fn redaction_is_idempotent() {
         let cfg = crate::config::RedactConfig::default();
@@ -198,6 +388,7 @@ mod tests {
             ],
             commits: vec![],
             files_touched: vec![],
+            redaction_count: 0,
         };
         redact_session(&mut s, &crate::config::RedactConfig::default());
         assert_eq!(s.prompt_summary, "[REDACTED:aws]");
@@ -229,6 +420,7 @@ mod tests {
             )],
             commits: vec![],
             files_touched: vec![],
+            redaction_count: 0,
         };
         redact_session(&mut s, &crate::config::RedactConfig::default());
         if let Message::Reasoning { content } = &s.messages[0] {
@@ -257,6 +449,7 @@ mod tests {
             messages: vec![Message::user("API_KEY=supersecret")],
             commits: vec![],
             files_touched: vec![],
+            redaction_count: 0,
         };
         redact_session(&mut s, &cfg);
         assert_eq!(s.prompt_summary, "AKIAIOSFODNN7EXAMPLE");

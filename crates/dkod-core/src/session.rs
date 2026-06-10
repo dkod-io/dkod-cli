@@ -10,6 +10,11 @@ pub struct Session {
     pub messages: Vec<Message>,
     pub commits: Vec<String>,
     pub files_touched: Vec<String>,
+    /// Audit count: total number of replacements the capture-time redactor
+    /// made in this session. Defaults to 0 so sessions stored before this
+    /// field existed keep deserializing.
+    #[serde(default)]
+    pub redaction_count: u64,
 }
 
 impl Session {
@@ -119,10 +124,29 @@ mod tests {
             ],
             commits: vec!["deadbeef".into()],
             files_touched: vec!["src/auth.rs".into()],
+            redaction_count: 3,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn session_json_without_redaction_count_deserializes_to_zero() {
+        // Sessions stored before the audit-count field existed must keep
+        // deserializing; the count defaults to 0.
+        let json = r#"{
+            "id": "0192f8e2-7b3a-7000-8a3e-000000000001",
+            "agent": "claude_code",
+            "created_at": 1735689600,
+            "duration_ms": 1,
+            "prompt_summary": "fix the auth bug",
+            "messages": [],
+            "commits": [],
+            "files_touched": []
+        }"#;
+        let s: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(s.redaction_count, 0);
     }
 
     #[test]
