@@ -6,11 +6,16 @@ use predicates::str::contains;
 use std::process::Command as StdCommand;
 
 fn init_git_repo(path: &std::path::Path) {
-    StdCommand::new("git")
+    let output = StdCommand::new("git")
         .arg("init")
         .arg(path)
         .output()
         .unwrap();
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn fixture_session(id: &str) -> Session {
