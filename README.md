@@ -1,38 +1,94 @@
-# dkod
+# dkod — the git-native flight recorder for AI coding agents
 
-Capture every AI agent session into your git repository as a custom git ref.
+Transcripts are never stored outside your git host.
 
 ![dkod demo](docs/demo/dkod-demo.gif)
 
-`dkod blame` shows, per line, which agent session wrote it and what was asked;
-`dkod drift <id> --card` renders a shareable card when a session did more than
-the prompt asked. (Regenerate the GIF with `vhs docs/demo/blame.tape`.)
+dkod captures every AI agent session — prompt, reasoning, tool calls — into
+your repo's own git refs (`refs/dkod/sessions/*`). `dkod blame` answers
+"which prompt wrote this line?"; `dkod drift` flags sessions where the agent
+did materially more than it was asked. It works with 7 agents (Claude Code,
+Codex, Copilot CLI, Cursor, Factory droid, Gemini CLI, opencode). MIT
+licensed, single static binary, zero network at capture time.
 
 ## Install
+
+```sh
+brew install dkod-io/tap/dkod
+```
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dkod-io/dkod-cli/main/install.sh | sh
 ```
 
-(While the repo is private, set `GH_TOKEN` to a GitHub PAT with read access first.)
-
-Or with cargo:
-
 ```sh
 cargo install --git https://github.com/dkod-io/dkod-cli dkod-cli
 ```
 
-## Redaction
+## Quickstart
 
-Captured transcripts are scrubbed at capture time, on by default: known key
-formats (AWS, GitHub, OpenAI, Stripe), `ENV=value` assignments, a generic
-entropy-based rule for random credentials, plus your own custom patterns.
-Every replacement is tallied in a per-session audit count shown by
-`dkod show`. Redaction is best-effort, not a guarantee — see
+```sh
+dkod setup        # wizard: detects installed agents, wires capture everywhere
+# — or, for a single repo —
+dkod init         # wire capture in the current repo
+```
+
+From then on, sessions accumulate automatically as you use your agents:
+
+```sh
+dkod log               # list captured sessions in this repo
+dkod show <id>         # full transcript of one session
+dkod blame <path>      # per line: which session (and prompt) wrote it
+dkod drift             # sessions where the agent exceeded its brief
+dkod drift <id> --card # shareable boxed card for one session
+```
+
+`dkod init` also writes a `.dkod.toml` breadcrumb at the repo root, so
+teammates browsing the repo learn the session history exists. After cloning,
+they run `dkod init` once — it detects existing sessions on `origin` and
+fetches the history.
+
+## Privacy & redaction
+
+Sessions live in **your** repo as git refs and travel with normal git
+push/fetch. The optional hosted team layer persists metadata only and fetches
+content on demand under your own token.
+
+Capture-time secret redaction is **on by default**: known key formats,
+`ENV=value` assignments, an entropy rule for generic credentials, plus your
+own custom patterns. Every replacement is tallied in a per-session audit
+count shown by `dkod show`. Redaction is best-effort, not a guarantee — see
 [`docs/redaction.md`](docs/redaction.md) for the full rule set and
 limitations.
 
-See `docs/plans/2026-05-03-dkod-pivot-design.md` for design context and
-`docs/plans/2026-05-03-dkod-cli-v1-implementation.md` for the implementation plan.
+## Supported agents
 
-MIT licensed.
+| Agent | Captured via |
+| --- | --- |
+| Claude Code | Hooks (`~/.claude/settings.json`) |
+| Codex | PATH shim wrapper (consent-gated — no hook API) |
+| Copilot CLI | Hooks (`~/.copilot/hooks/`) |
+| Cursor | Hooks (`.cursor/hooks.json`) |
+| Factory droid | Hooks (`~/.factory/settings.json`) |
+| Gemini CLI | Hooks (`~/.gemini/settings.json`) |
+| opencode | Hooks (`opencode.json`) |
+
+Every agent can also be wrapped explicitly:
+`dkod capture <agent> -- <args>`.
+
+## How it works
+
+Each session is stored as a blob under `refs/dkod/sessions/<id>`; the commits
+it produced are linked via `refs/dkod/commits/<sha>`. Custom refs stay out of
+`git branch -a` and your normal workflow. A post-rewrite hook re-links
+sessions after rebases, with a patch-id fallback for rewrites the hook can't
+see — so `dkod blame` survives history rewrites.
+
+Design docs: [pivot design](docs/plans/2026-05-03-dkod-pivot-design.md) ·
+[V1 implementation plan](docs/plans/2026-05-03-dkod-cli-v1-implementation.md).
+(Regenerate the demo GIF with `vhs docs/demo/blame.tape`.)
+
+---
+
+MIT licensed · [dkod.io](https://dkod.io) · Built in the open — issues and
+PRs welcome.
