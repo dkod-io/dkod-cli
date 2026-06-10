@@ -125,13 +125,20 @@ fn another_server_is_running(socket_path: &Path) -> bool {
 }
 
 /// Build the JSON value that goes under `hooks[<Event>]` for one event.
+///
+/// The command uses the fail-open template (issue #24): it exits 0
+/// whether dkod is missing, stale, or crashing, so a broken PATH can
+/// never brick the user's Claude Code sessions.
 fn dkod_hook_entry_for_event(repo_hash: &str, event: &str, timeout: u32) -> Value {
+    let command = crate::cmd::setup::failopen::fail_open_hook_command(&format!(
+        "dkod capture-hook {repo_hash} {event}"
+    ));
     serde_json::json!({
         "matcher": "*",
         DKOD_SENTINEL_KEY: true,
         "hooks": [{
             "type": "command",
-            "command": format!("dkod capture-hook {repo_hash} {event}"),
+            "command": command,
             "timeout": timeout,
         }]
     })
@@ -167,6 +174,12 @@ fn install_hooks(repo_root: &Path, repo_hash: &str) -> Result<()> {
     let hooks_obj = hooks
         .as_object_mut()
         .ok_or_else(|| anyhow!(".claude/settings.local.json: hooks must be an object"))?;
+
+    // Self-heal pass (issue #24): rewrite any old-form (non-fail-open)
+    // dkod capture-hook command to the fail-open template before the
+    // sentinel-based replace below, so stray or hand-copied entries are
+    // made harmless too.
+    crate::cmd::setup::failopen::heal_hooks_object(hooks_obj);
 
     for &(event, timeout) in HOOK_EVENTS {
         let arr = hooks_obj

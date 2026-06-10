@@ -27,10 +27,22 @@ use std::path::{Path, PathBuf};
 /// wizard's per-repo opt-out drops this at `<repo>/.dkod/no-auto-init`.
 const AUTO_INIT_OPT_OUT: &str = ".dkod/no-auto-init";
 
+/// Reserved agent name used by the setup wizard's preflight probe
+/// (`dkod capture-hook --agent probe --event Preflight`). Handled as a
+/// side-effect-free no-op that exits 0: the probe's only job is to prove
+/// that the PATH-resolved binary accepts the wizard's hook syntax. A
+/// stale (pre-wizard) binary rejects `--agent` at clap level and exits 2
+/// — exactly the failure signal the preflight looks for.
+const PROBE_AGENT: &str = "probe";
+
 /// Public entry point used by `main.rs`. Always returns `Ok(())` so the
 /// hook process exits 0 — never break the user's agent because dkod had
 /// a bad day.
 pub fn route_and_buffer(agent: &str, event: &str) -> Result<()> {
+    if agent == PROBE_AGENT {
+        // Preflight probe: exit 0 without touching the filesystem.
+        return Ok(());
+    }
     if let Err(e) = inner(agent, event) {
         log_error(agent, &format!("hook ({event}): {e:#}"));
     }

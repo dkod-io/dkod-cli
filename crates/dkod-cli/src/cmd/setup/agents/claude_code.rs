@@ -9,6 +9,7 @@
 //! a per-repo `dkod init` first.
 
 use crate::cmd::setup::agents::{AgentInstaller, DetectedAgent, InstallContext, InstallOutcome};
+use crate::cmd::setup::failopen::{fail_open_hook_command, heal_hooks_object};
 use crate::cmd::setup::state::{fingerprint, AgentState, Scope};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -118,6 +119,14 @@ fn install_user_scope(home: &Path, state: &mut AgentState) -> Result<()> {
         .as_object_mut()
         .context("settings.json `hooks` block is not an object")?;
 
+    // Self-heal pass (issue #24): rewrite any old-form (non-fail-open)
+    // `dkod capture-hook` command — sentinel-marked or hand-copied — to
+    // the fail-open template before the install loop runs. The loop below
+    // only replaces sentinel entries for the events we install; this pass
+    // also rescues stray entries on other events, in place, so a bricked
+    // user is fully healed by a single `dkod setup` re-run.
+    heal_hooks_object(hooks_obj);
+
     for (event, version) in dkod_hook_events() {
         let arr = hooks_obj
             .entry((*event).to_string())
@@ -136,6 +145,12 @@ fn install_user_scope(home: &Path, state: &mut AgentState) -> Result<()> {
                 != Some(true)
         });
 
+        // Fail-open form (issue #24): exits 0 whether dkod is missing,
+        // stale, or crashing. Claude Code treats PreToolUse exit 2 as
+        // BLOCK — a capture hook must never be able to do that.
+        let command = fail_open_hook_command(&format!(
+            "dkod capture-hook --agent claude-code --event {event}"
+        ));
         arr.push(json!({
             "_dkod": true,
             "version": version,
@@ -143,7 +158,7 @@ fn install_user_scope(home: &Path, state: &mut AgentState) -> Result<()> {
             "hooks": [
                 {
                     "type": "command",
-                    "command": "dkod capture-hook --agent claude-code --event ".to_string() + event,
+                    "command": command,
                     "timeout": 5,
                 }
             ],

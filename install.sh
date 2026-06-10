@@ -297,7 +297,7 @@ chmod +x "$INSTALL_PATH"
 if [ -n "${DKOD_SKIP_SETUP:-}" ]; then
     log "DKOD_SKIP_SETUP set; skipping seamless-capture wizard"
 else
-    log "running seamless-capture wizard..."
+    log "wiring agent hooks: adding dkod capture hooks to your installed AI agents' configs (fail-open — hooks exit 0 even if dkod is missing or broken)"
     # --non-interactive is implied (install.sh is piped from curl, so
     # stdin isn't a TTY anyway), but pass the flag explicitly so the
     # subprocess records every consent-required agent as
@@ -309,6 +309,37 @@ else
     else
         log "warning: wizard exited non-zero; run \`dkod setup\` manually"
     fi
+fi
+
+# --- PATH shadow check ---------------------------------------------------------
+#
+# The hooks the wizard wrote invoke bare `dkod`, so they run whatever binary
+# PATH resolves. If that is NOT the binary we just installed (e.g. an old
+# cargo-installed dkod at ~/.cargo/bin shadows $PREFIX), session capture
+# silently breaks — and before v0.2.1's fail-open hook form, a stale binary
+# that rejected the hook syntax bricked agent sessions outright. Warn loudly.
+
+RESOLVED_DKOD="$(command -v dkod 2>/dev/null || true)"
+if [ -n "$RESOLVED_DKOD" ] && [ "$RESOLVED_DKOD" != "$INSTALL_PATH" ]; then
+    RESOLVED_DIR=$(dirname "$RESOLVED_DKOD")
+    cat >&2 <<EOF
+
+==============================================================================
+ WARNING: \`dkod\` on your PATH resolves to a DIFFERENT binary:
+
+     PATH resolves:  $RESOLVED_DKOD
+     just installed: $INSTALL_PATH
+
+ Agent hooks invoke bare \`dkod\`, so they will run $RESOLVED_DKOD.
+ If that binary is an older version, session capture will not work
+ (hooks are fail-open, so your agents keep working either way).
+
+ Fix one of:
+   - remove the shadowing binary:        rm "$RESOLVED_DKOD"
+     (or update a cargo-installed copy:  cargo install dkod-cli)
+   - put $PREFIX earlier in PATH than $RESOLVED_DIR
+==============================================================================
+EOF
 fi
 
 # --- Done --------------------------------------------------------------------
