@@ -96,8 +96,109 @@ impl DriftVerdict {
 const LIST_CAP: usize = 5;
 const SENSITIVE_CAP: usize = 10;
 
+/// Area words that authorize a sensitive glob when they appear in the intent:
+/// "update the CI workflow" authorizes `.github/workflows/**` without naming
+/// the file. Keyed by the exact default glob string; custom globs simply have
+/// no association (and are never area-suppressed).
+const AREA_KEYWORDS: &[(&str, &[&str])] = &[
+    (
+        ".github/workflows/**",
+        &["workflow", "workflows", "ci", "pipeline"],
+    ),
+    ("**/Dockerfile", &["dockerfile"]),
+    ("**/auth*", &["auth", "authentication", "authorization"]),
+    ("**/migrations/**", &["migration", "migrations"]),
+];
+
 fn basename_lower(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_lowercase()
+}
+
+/// Lowercase alphanumeric word tokens of the intent ("run cargo add serde"
+/// → {run, cargo, add, serde}; "src/auth.rs" → {src, auth, rs}).
+fn word_tokens(intent_lower: &str) -> std::collections::HashSet<String> {
+    intent_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// True when `keyword` appears in the intent: single-word keywords must match
+/// a whole word token (so "dep" never matches "deploy"); multi-word keywords
+/// match as substrings.
+fn keyword_present(
+    keyword: &str,
+    intent_lower: &str,
+    tokens: &std::collections::HashSet<String>,
+) -> bool {
+    let k = keyword.to_lowercase();
+    if k.split_whitespace().nth(1).is_some() {
+        intent_lower.contains(&k)
+    } else {
+        tokens.contains(&k)
+    }
+}
+
+/// Path-shaped or basename tokens the intent explicitly mentions (lowercased,
+/// deduplicated). Shared by the sensitive-path authorization check and the
+/// unmentioned-file rule.
+fn mentioned_paths(
+    intent: &str,
+    touched_basenames: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut mentioned: Vec<String> = Vec::new();
+    for tok in intent
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\''))
+    {
+        // Trim trailing punctuation (sentence-ending `.` / `:`) but keep
+        // leading dots so dotfiles like `.env` stay recognizable.
+        let t = tok.trim_end_matches(['.', ':']);
+        if t.is_empty() {
+            continue;
+        }
+        let path_shaped = t.contains('/') && t.rsplit('/').next().is_some_and(|b| b.contains('.'));
+        let is_basename = touched_basenames.contains(&basename_lower(t));
+        if path_shaped || is_basename {
+            let tl = t.to_lowercase();
+            if !mentioned.iter().any(|m| m.eq_ignore_ascii_case(&tl)) {
+                mentioned.push(tl);
+            }
+        }
+    }
+    mentioned
+}
+
+/// Basename without its last extension ("test_cache.py" → "test_cache").
+fn stem(basename: &str) -> &str {
+    basename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(basename)
+}
+
+/// For a test-file stem, the name of the unit under test:
+/// "test_cache" → "cache", "retry.test" → "retry", "http_client_spec" →
+/// "http_client". `None` when the stem is not test-shaped.
+fn test_subject(stem: &str) -> Option<&str> {
+    for prefix in ["test_", "test-"] {
+        if let Some(rest) = stem.strip_prefix(prefix) {
+            return Some(rest).filter(|r| !r.is_empty());
+        }
+    }
+    for suffix in ["_test", "-test", ".test", "_spec", "-spec", ".spec"] {
+        if let Some(rest) = stem.strip_suffix(suffix) {
+            return Some(rest).filter(|r| !r.is_empty());
+        }
+    }
+    None
+}
+
+/// True when one of `a`/`b` is a test file for the other ("test_cache.py" ↔
+/// "cache.py"). Inputs are lowercased basenames.
+fn test_pair(a: &str, b: &str) -> bool {
+    test_subject(stem(a)) == Some(stem(b)) || test_subject(stem(b)) == Some(stem(a))
 }
 
 /// Analyze a session for intent-vs-output drift. Pure: no I/O. `diff_stats` is
@@ -126,31 +227,74 @@ pub fn analyze(
         intent = session.prompt_summary.clone();
     }
     let intent_lower = intent.to_lowercase();
+    let tokens = word_tokens(&intent_lower);
+    let touched_basenames: std::collections::HashSet<String> = session
+        .files_touched
+        .iter()
+        .map(|f| basename_lower(f))
+        .collect();
+    let mentioned = mentioned_paths(&intent, &touched_basenames);
+    let mentioned_basenames: std::collections::HashSet<String> =
+        mentioned.iter().map(|m| basename_lower(m)).collect();
 
-    // Rule 1: sensitive-path tripwire.
+    // A dependency ask makes lockfile churn the mechanical consequence of the
+    // prompt: lockfiles are exempt from the tripwire, manifest+lockfile pairs
+    // from the unmentioned rule. Non-lockfile sensitive paths stay armed.
+    let dep_ask = cfg
+        .dep_ask_keywords
+        .iter()
+        .any(|k| keyword_present(k, &intent_lower, &tokens));
+    let is_lockfile = |file: &str| cfg.lockfile_paths.iter().any(|g| glob_match(g, file));
+    let is_manifest = |file: &str| cfg.manifest_paths.iter().any(|g| glob_match(g, file));
+
+    // Rule 1: sensitive-path tripwire (authorization-aware).
     let mut sensitive_emitted = 0usize;
     for file in &session.files_touched {
         if sensitive_emitted >= SENSITIVE_CAP {
             break;
         }
+        // The prompt naming the file (basename or path token) authorizes it.
+        let explicitly_mentioned = mentioned_basenames.contains(&basename_lower(file))
+            || mentioned.iter().any(|m| m == &file.to_lowercase());
         for glob in &cfg.sensitive_paths {
-            if glob_match(glob, file) {
-                verdict.reasons.push(DriftReason {
-                    rule: "sensitive_path",
-                    detail: format!("touched sensitive path: {file} (matched {glob})"),
-                });
-                sensitive_emitted += 1;
-                break;
+            if !glob_match(glob, file) {
+                continue;
             }
+            if dep_ask && is_lockfile(file) {
+                continue; // suppressed: lockfile churn under a dependency ask
+            }
+            if explicitly_mentioned {
+                continue; // suppressed: the prompt named this very file
+            }
+            // The prompt naming the area ("update the CI workflow") authorizes
+            // exactly the associated glob — other sensitive globs still fire.
+            let area_authorized = AREA_KEYWORDS
+                .iter()
+                .any(|(g, words)| g == glob && words.iter().any(|w| tokens.contains(*w)));
+            if area_authorized {
+                continue;
+            }
+            verdict.reasons.push(DriftReason {
+                rule: "sensitive_path",
+                detail: format!("touched sensitive path: {file} (matched {glob})"),
+            });
+            sensitive_emitted += 1;
+            break;
         }
     }
 
-    // Rule 2: small-ask / large-change magnitude.
-    let small_ask = intent.chars().count() <= cfg.small_ask_max_chars
-        || cfg
-            .small_ask_keywords
-            .iter()
-            .any(|k| intent_lower.contains(&k.to_lowercase()));
+    // Rule 2: small-ask / large-change magnitude. Broad-scope phrases
+    // ("rename X everywhere") make a prompt not-small regardless of length.
+    let broad_scope = cfg
+        .broad_scope_phrases
+        .iter()
+        .any(|p| intent_lower.contains(&p.to_lowercase()));
+    let small_ask = !broad_scope
+        && (intent.chars().count() <= cfg.small_ask_max_chars
+            || cfg
+                .small_ask_keywords
+                .iter()
+                .any(|k| intent_lower.contains(&k.to_lowercase())));
     let large_by_files = session.files_touched.len() >= cfg.large_change_files;
     let large_by_lines = diff_stats
         .map(|d| d.insertions + d.deletions >= cfg.large_change_lines)
@@ -171,35 +315,19 @@ pub fn analyze(
     }
 
     // Rule 3: unmentioned-file drift (only when the prompt named paths).
-    let touched_basenames: std::collections::HashSet<String> = session
-        .files_touched
-        .iter()
-        .map(|f| basename_lower(f))
-        .collect();
-    let mut mentioned: Vec<String> = Vec::new();
-    for tok in intent
-        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\''))
-    {
-        let t = tok.trim_matches(|c: char| matches!(c, '.' | ':'));
-        if t.is_empty() {
-            continue;
-        }
-        let path_shaped = t.contains('/') && t.rsplit('/').next().is_some_and(|b| b.contains('.'));
-        let is_basename = touched_basenames.contains(&basename_lower(t));
-        if path_shaped || is_basename {
-            let tl = t.to_lowercase();
-            if !mentioned.iter().any(|m| m.eq_ignore_ascii_case(&tl)) {
-                mentioned.push(tl);
-            }
-        }
-    }
+    // Exemptions: under a dependency ask, manifest+lockfile churn is the
+    // mechanical companion of the ask; a named test file vouches for its
+    // source under test (and vice versa).
     if !mentioned.is_empty() {
-        let mentioned_basenames: std::collections::HashSet<String> =
-            mentioned.iter().map(|m| basename_lower(m)).collect();
         let unmentioned: Vec<&String> = session
             .files_touched
             .iter()
             .filter(|f| !mentioned_basenames.contains(&basename_lower(f)))
+            .filter(|f| !(dep_ask && (is_lockfile(f) || is_manifest(f))))
+            .filter(|f| {
+                let fb = basename_lower(f);
+                !mentioned.iter().any(|m| test_pair(&basename_lower(m), &fb))
+            })
             .collect();
         if !unmentioned.is_empty() {
             let shown: Vec<String> = unmentioned
@@ -411,5 +539,248 @@ mod analyze_tests {
     fn empty_files_touched_is_clean() {
         let s = session("fix typo", &[]);
         assert!(analyze(&s, None, &DriftConfig::default()).is_clean());
+    }
+
+    // --- dependency-aware lockfile suppression (issue #28) ---
+
+    #[test]
+    fn dep_ask_with_lockfile_churn_is_clean() {
+        let s = session(
+            "add the axios dependency and use it for the weather fetch in src/weather.js",
+            &["package.json", "package-lock.json", "src/weather.js"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cargo_add_lockfile_churn_is_clean() {
+        let s = session(
+            "run cargo add serde and derive Serialize on the config structs in src/config.rs",
+            &["Cargo.toml", "Cargo.lock", "src/config.rs"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dep_ask_suppresses_only_lockfiles_not_other_sensitive_paths() {
+        let s = session(
+            "update the dependencies",
+            &["Cargo.lock", ".github/workflows/ci.yml"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.reasons.iter().any(
+                |r| r.rule == "sensitive_path" && r.detail.contains(".github/workflows/ci.yml")
+            ),
+            "workflow must still flag; got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+        assert!(
+            !v.reasons.iter().any(|r| r.detail.contains("Cargo.lock")),
+            "lockfile must be suppressed under a dep ask; got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lockfile_churn_without_dep_ask_still_flags() {
+        let s = session(
+            "fix the flaky retry test",
+            &["tests/retry.test.js", "package-lock.json"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| r.rule == "sensitive_path" && r.detail.contains("package-lock.json")));
+    }
+
+    // --- authorization-aware sensitive-path tripwire (issue #28) ---
+
+    #[test]
+    fn authorized_ci_workflow_ask_is_clean() {
+        let s = session(
+            "update the ci workflow to also run clippy on pull requests",
+            &[".github/workflows/ci.yml"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unauthorized_workflow_touch_still_flags() {
+        let s = session("fix typo", &[".github/workflows/ci.yml"]);
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| r.rule == "sensitive_path" && r.detail.contains("ci.yml")));
+    }
+
+    #[test]
+    fn explicit_path_mention_suppresses_sensitive_reason() {
+        let s = session(
+            "pin the ubuntu runner to 22.04 in .github/workflows/deploy.yml like the other repos",
+            &[".github/workflows/deploy.yml"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn authorized_mention_suppresses_only_matching_glob() {
+        // Workflow explicitly named; the Dockerfile is not — only the
+        // Dockerfile reason should survive.
+        let s = session(
+            "update the ci workflow to cache cargo builds",
+            &[".github/workflows/ci.yml", "Dockerfile"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.reasons
+                .iter()
+                .any(|r| r.rule == "sensitive_path" && r.detail.contains("Dockerfile")),
+            "Dockerfile must still flag; got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+        assert!(!v.reasons.iter().any(|r| r.detail.contains("ci.yml")));
+    }
+
+    #[test]
+    fn dockerfile_area_word_authorizes_dockerfile() {
+        let s = session(
+            "use node 20 in the Dockerfile and switch to npm ci",
+            &["Dockerfile"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn migration_area_word_authorizes_migrations() {
+        let s = session(
+            "write a migration adding the deleted_at column to users and update the model",
+            &[
+                "db/migrations/0051_add_deleted_at.sql",
+                "app/models/user.py",
+            ],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn auth_area_word_authorizes_auth_paths() {
+        let s = session(
+            "implement the password reset flow in src/auth.rs with token expiry",
+            &["src/auth.rs"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            !v.reasons.iter().any(|r| r.rule == "sensitive_path"),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    // --- scope-aware small-ask (issue #28 stretch) ---
+
+    #[test]
+    fn broad_scope_rename_everywhere_does_not_fire_magnitude() {
+        let s = session(
+            "rename the User.fullname field to display_name everywhere it appears",
+            &[
+                "a.py", "b.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py", "i.py",
+            ],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            !v.reasons.iter().any(|r| r.rule == "magnitude"),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vague_short_prompt_with_many_files_still_fires_magnitude() {
+        let s = session(
+            "improve stuff",
+            &[
+                "a.py", "b.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py", "i.py",
+            ],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(v.reasons.iter().any(|r| r.rule == "magnitude"));
+    }
+
+    // --- test-file / source-under-test pairing in the unmentioned rule ---
+
+    #[test]
+    fn named_test_file_pairs_with_its_source_under_test() {
+        let s = session(
+            "make tests/test_cache.py pass",
+            &["tests/test_cache.py", "src/cache.py"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            !v.reasons.iter().any(|r| r.rule == "unmentioned"),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unmentioned_still_fires_on_unrelated_companion() {
+        let s = session(
+            "make tests/test_cache.py pass",
+            &["tests/test_cache.py", "src/billing.py"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| r.rule == "unmentioned" && r.detail.contains("src/billing.py")));
+    }
+
+    #[test]
+    fn dotfile_mention_keeps_leading_dot_and_authorizes() {
+        // ".env" must survive token trimming (only trailing punctuation is
+        // stripped), so naming it authorizes the **/.env* tripwire.
+        let s = session(
+            "add the STRIPE_KEY placeholder to .env.example",
+            &[".env.example"],
+        );
+        let v = analyze(&s, None, &DriftConfig::default());
+        assert!(
+            v.is_clean(),
+            "got: {:?}",
+            v.reasons.iter().map(|r| &r.detail).collect::<Vec<_>>()
+        );
     }
 }
