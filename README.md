@@ -2,6 +2,12 @@
 
 Capture every AI agent session into your git repository as a custom git ref.
 
+![dkod demo](docs/demo/dkod-demo.gif)
+
+`dkod blame` shows, per line, which agent session wrote it and what was asked;
+`dkod drift <id> --card` renders a shareable card when a session did more than
+the prompt asked. (Regenerate the GIF with `vhs docs/demo/blame.tape`.)
+
 ## Install
 
 ```sh

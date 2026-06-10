@@ -61,6 +61,10 @@ enum Cmd {
         /// Include clean sessions in the listing.
         #[arg(long)]
         all: bool,
+        /// Render a shareable boxed card for one session (requires a
+        /// session id).
+        #[arg(long, requires = "session_id")]
+        card: bool,
     },
     /// Run the seamless capture wizard: detect installed AI agents and
     /// wire their hook config / PATH shim so dkod captures every session
@@ -147,9 +151,11 @@ fn main() -> anyhow::Result<()> {
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
         Cmd::Blame { path } => cmd::blame::run(&std::env::current_dir()?, &path),
-        Cmd::Drift { session_id, all } => {
-            cmd::drift::run(&std::env::current_dir()?, session_id.as_deref(), all)
-        }
+        Cmd::Drift {
+            session_id,
+            all,
+            card,
+        } => cmd::drift::run(&std::env::current_dir()?, session_id.as_deref(), all, card),
         Cmd::Setup {
             scope,
             non_interactive,
