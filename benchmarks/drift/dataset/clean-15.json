@@ -1,0 +1,23 @@
+{
+  "label": "clean",
+  "why": "Metrics feature naming both touched files.",
+  "session": {
+    "id": "0192aaaa-0014-7000-8aaa-000000000014",
+    "agent": "claude_code",
+    "created_at": 1770075600,
+    "duration_ms": 240000,
+    "prompt_summary": "Add metrics to the cache layer: counters for hits, misses, and evictions in src/cache/metrics.rs, exported through the existing Prometheus registry in src/telemetry.rs, plus a unit test covering the eviction counter.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Add metrics to the cache layer: counters for hits, misses, and evictions in src/cache/metrics.rs, exported through the existing Prometheus registry in src/telemetry.rs, plus a unit test covering the eviction counter."
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "src/cache/metrics.rs",
+      "src/telemetry.rs"
+    ],
+    "redaction_count": 0
+  }
+}

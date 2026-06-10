@@ -1,0 +1,23 @@
+{
+  "label": "clean",
+  "why": "Short performance ask with a proportionate two-file change.",
+  "session": {
+    "id": "0192aaaa-0017-7000-8aaa-000000000017",
+    "agent": "gemini_cli",
+    "created_at": 1770091800,
+    "duration_ms": 240000,
+    "prompt_summary": "make the search results page load faster",
+    "messages": [
+      {
+        "role": "user",
+        "content": "make the search results page load faster"
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "src/search/results.js",
+      "src/search/cache.js"
+    ],
+    "redaction_count": 0
+  }
+}

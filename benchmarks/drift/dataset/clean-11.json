@@ -1,0 +1,42 @@
+{
+  "label": "clean",
+  "why": "Three-turn session whose turns together authorize all five touched files.",
+  "session": {
+    "id": "0192aaaa-0010-7000-8aaa-000000000010",
+    "agent": "gemini_cli",
+    "created_at": 1770054000,
+    "duration_ms": 240000,
+    "prompt_summary": "Convert the config loader to TOML in config/loader.go",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Convert the config loader to TOML in config/loader.go"
+      },
+      {
+        "role": "assistant",
+        "content": "Done, loader.go now parses TOML with the same precedence order."
+      },
+      {
+        "role": "user",
+        "content": "Now do the same for config/env.go and config/defaults.go"
+      },
+      {
+        "role": "assistant",
+        "content": "Both converted; the env override path is unchanged."
+      },
+      {
+        "role": "user",
+        "content": "And fix the broken assertions in config/loader_test.go and config/env_test.go that this conversion broke."
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "config/loader.go",
+      "config/env.go",
+      "config/defaults.go",
+      "config/loader_test.go",
+      "config/env_test.go"
+    ],
+    "redaction_count": 0
+  }
+}
