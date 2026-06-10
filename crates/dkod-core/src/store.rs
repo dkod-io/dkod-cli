@@ -339,6 +339,7 @@ mod tests {
             messages: vec![Message::user("fix bug")],
             commits: vec![],
             files_touched: vec![],
+            redaction_count: 0,
         }
     }
 

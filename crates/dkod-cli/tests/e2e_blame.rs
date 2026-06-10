@@ -48,6 +48,7 @@ fn blame_annotates_ai_lines_and_passes_through_others() {
         messages: vec![],
         commits: vec![sha.clone()],
         files_touched: vec!["f.txt".into()],
+        redaction_count: 0,
     };
     dkod_core::store::write_session(repo.path(), &s).unwrap();
     dkod_core::store::link_session_to_commit(repo.path(), &s.id, &sha).unwrap();

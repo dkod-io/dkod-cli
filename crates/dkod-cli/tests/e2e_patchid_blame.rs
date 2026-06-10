@@ -75,6 +75,7 @@ fn seed_session(repo: &Path, prompt: &str, old_sha: &str) -> dkod_core::Session 
         messages: vec![],
         commits: vec![old_sha.to_string()],
         files_touched: vec!["f.txt".into()],
+        redaction_count: 0,
     };
     dkod_core::store::write_session(repo, &s).unwrap();
     dkod_core::store::link_session_to_commit(repo, &s.id, old_sha).unwrap();

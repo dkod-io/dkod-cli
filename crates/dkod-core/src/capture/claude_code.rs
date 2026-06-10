@@ -320,6 +320,7 @@ pub fn parse_transcript(path: &Path) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     // tool_use_id -> index into session.messages, for matching tool_result

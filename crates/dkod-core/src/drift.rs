@@ -289,6 +289,7 @@ mod analyze_tests {
             messages: vec![Message::user(prompt)],
             commits: vec![],
             files_touched: files.iter().map(|s| s.to_string()).collect(),
+            redaction_count: 0,
         }
     }
 
@@ -398,6 +399,7 @@ mod analyze_tests {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            redaction_count: 0,
         };
         let v = analyze(&s, None, &DriftConfig::default());
         assert!(

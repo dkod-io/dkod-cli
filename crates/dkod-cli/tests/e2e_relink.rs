@@ -57,6 +57,7 @@ fn relink_restores_blame_after_amend() {
         messages: vec![],
         commits: vec![old.clone()],
         files_touched: vec!["f.txt".into()],
+        redaction_count: 0,
     };
     dkod_core::store::write_session(repo.path(), &s).unwrap();
     dkod_core::store::link_session_to_commit(repo.path(), &s.id, &old).unwrap();
