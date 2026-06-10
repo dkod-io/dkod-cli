@@ -209,6 +209,22 @@ fn blank_agent_state() -> AgentState {
 /// runs the orchestrator, prints the summary. The CLI argv is parsed
 /// upstream; this fn only takes the resolved flags.
 pub fn run_cli(scope: Scope, non_interactive_flag: bool, repo_root: Option<&Path>) -> Result<()> {
+    // Preflight (issue #24): before writing any hooks, check whether the
+    // `dkod` that PATH resolves is the same (and same-version) binary as
+    // the one running this wizard. A stale binary that rejects the hook
+    // syntax would have bricked sessions before hooks became fail-open;
+    // it still silently breaks capture, so warn loudly. Never fatal —
+    // hooks are written only in the fail-open form, which is safe
+    // regardless of what PATH resolves.
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let report = crate::cmd::setup::preflight::run_preflight(
+        path_env.as_os_str(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    if let Some(warning) = report.warning() {
+        eprintln!("dkod: {warning}");
+    }
+
     // The CLI flag overrides the TTY heuristic — users explicitly passing
     // `--non-interactive` want it even on a TTY.
     let non_interactive = non_interactive_flag || !is_tty();
