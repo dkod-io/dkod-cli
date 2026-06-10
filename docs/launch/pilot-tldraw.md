@@ -43,7 +43,7 @@ drive-by slop farmer to fake convincingly.
 - not asking you to mandate dkod, or sessions, or anything, for anyone
 - not asking contributors who code by hand to do anything different
 - no install on your side — review happens through a shareable read-only
-  viewer link: <https://dkod.io/viewer> (zero-install, renders the session
+  viewer link: <https://dkod-indexer.fly.dev/v/github/dkod-io/dkod-cli/0196f8e2-2222-7000-8000-00000000demo> (zero-install, live example — renders the session
   read-only)
 
 The framing is purely a carrot: a closed-by-policy PR gets a path back to

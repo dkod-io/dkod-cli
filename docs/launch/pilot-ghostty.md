@@ -1,6 +1,6 @@
 # Ghostty / Mitchell Hashimoto pilot outreach — email/DM draft
 
-> **WHEN TO SEND / WHERE:** Week 1 of the launch sequence, alongside the tldraw outreach. Email preferred (Mitchell publishes contact info); X/Bluesky DM as fallback. Founder sends under his own name. Prerequisite: zero-install web session viewer live. NEEDS HUMAN TO SEND.
+> **WHEN TO SEND / WHERE:** Week 1 of the launch sequence, alongside the tldraw outreach. Email preferred (Mitchell publishes contact info); X/Bluesky DM as fallback. Founder sends under his own name. Prerequisite met: live viewer example — https://dkod-indexer.fly.dev/v/github/dkod-io/dkod-cli/0196f8e2-2222-7000-8000-00000000demo . NEEDS HUMAN TO SEND.
 
 ## Context (do not paste)
 
