@@ -51,6 +51,25 @@ pub struct DriftConfig {
     /// At or above this many changed lines (when diff stats are available)
     /// counts as a "large change".
     pub large_change_lines: usize,
+    /// Keywords (matched as whole words; multi-word entries as substrings)
+    /// that mark the prompt as a dependency ask. When any is present, lockfile
+    /// churn is treated as the mechanical consequence of the ask: paths
+    /// matching `lockfile_paths` are exempt from the sensitive-path tripwire,
+    /// and paths matching `lockfile_paths` or `manifest_paths` are exempt from
+    /// the unmentioned-file rule.
+    pub dep_ask_keywords: Vec<String>,
+    /// Globs identifying lockfiles — the subset of `sensitive_paths` that a
+    /// dependency ask legitimately rewrites. Consulted only by the dep-ask
+    /// suppression; non-lockfile sensitive paths always stay armed.
+    pub lockfile_paths: Vec<String>,
+    /// Globs identifying dependency manifests (the human-edited half of a
+    /// manifest+lockfile pair). Under a dependency ask these are exempt from
+    /// the unmentioned-file rule.
+    pub manifest_paths: Vec<String>,
+    /// Substrings that mark a prompt as broad-scoped ("rename X everywhere").
+    /// A broad-scoped prompt is never treated as a small ask by the magnitude
+    /// rule, regardless of length or `small_ask_keywords`.
+    pub broad_scope_phrases: Vec<String>,
 }
 
 impl Default for DriftConfig {
@@ -69,6 +88,7 @@ impl Default for DriftConfig {
                 "**/yarn.lock",
                 "**/poetry.lock",
                 "**/go.sum",
+                "**/pnpm-lock.yaml",
                 "**/migrations/**",
                 "**/auth*",
             ]
@@ -93,6 +113,54 @@ impl Default for DriftConfig {
             .collect(),
             large_change_files: 5,
             large_change_lines: 150,
+            dep_ask_keywords: vec![
+                "dependency",
+                "dependencies",
+                "dep",
+                "deps",
+                "upgrade",
+                "update",
+                "bump",
+                "add",
+                "install",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            lockfile_paths: vec![
+                "**/Cargo.lock",
+                "**/package-lock.json",
+                "**/yarn.lock",
+                "**/poetry.lock",
+                "**/go.sum",
+                "**/pnpm-lock.yaml",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            manifest_paths: vec![
+                "**/package.json",
+                "**/Cargo.toml",
+                "**/pyproject.toml",
+                "**/go.mod",
+                "**/Gemfile",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            broad_scope_phrases: vec![
+                "everywhere",
+                "across the codebase",
+                "all files",
+                "throughout",
+                "codebase-wide",
+                "every ",
+                "clean up",
+                "refactor",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
         }
     }
 }
@@ -147,6 +215,45 @@ mod tests {
         assert_eq!(c.drift.small_ask_max_chars, 140);
         assert_eq!(c.drift.large_change_files, 5);
         assert_eq!(c.drift.large_change_lines, 150);
+    }
+
+    #[test]
+    fn defaults_drift_suppression_knobs() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.drift.dep_ask_keywords.iter().any(|k| k == "dependency"));
+        assert!(c.drift.dep_ask_keywords.iter().any(|k| k == "bump"));
+        assert!(c.drift.lockfile_paths.iter().any(|p| p == "**/Cargo.lock"));
+        assert!(c
+            .drift
+            .lockfile_paths
+            .iter()
+            .any(|p| p == "**/pnpm-lock.yaml"));
+        assert!(c
+            .drift
+            .manifest_paths
+            .iter()
+            .any(|p| p == "**/package.json"));
+        assert!(c
+            .drift
+            .broad_scope_phrases
+            .iter()
+            .any(|p| p == "everywhere"));
+    }
+
+    #[test]
+    fn drift_suppression_knobs_parse_from_toml() {
+        let toml = r#"
+            [drift]
+            dep_ask_keywords = ["vendored"]
+            lockfile_paths = ["**/flake.lock"]
+            manifest_paths = ["**/flake.nix"]
+            broad_scope_phrases = ["repo-wide"]
+        "#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.drift.dep_ask_keywords, vec!["vendored"]);
+        assert_eq!(c.drift.lockfile_paths, vec!["**/flake.lock"]);
+        assert_eq!(c.drift.manifest_paths, vec!["**/flake.nix"]);
+        assert_eq!(c.drift.broad_scope_phrases, vec!["repo-wide"]);
     }
 
     #[test]

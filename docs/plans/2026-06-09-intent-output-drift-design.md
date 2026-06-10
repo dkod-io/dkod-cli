@@ -121,8 +121,10 @@ impl DriftVerdict { pub fn is_clean(&self) -> bool { self.reasons.is_empty() } }
   (all fields `#[serde(default)]`, so zero-config works). Fields: `enabled`
   (default true), `sensitive_paths`, `small_ask_max_chars` (default 140),
   `small_ask_keywords`, `large_change_files` (default 5), `large_change_lines`
-  (default 150). When `enabled = false`, `dkod drift` reports every session
-  clean (engine short-circuits).
+  (default 150), and — since issue #28 — the suppression knobs
+  `dep_ask_keywords`, `lockfile_paths`, `manifest_paths`, and
+  `broad_scope_phrases`. When `enabled = false`, `dkod drift` reports every
+  session clean (engine short-circuits).
 
 ## Data flow
 
@@ -167,6 +169,18 @@ dkod drift [id] [--all]
    it can miss paraphrased intent ("the auth module"); this only weakens the
    unmentioned-file rule, which is conservative by design (fires only when
    explicit paths are present).
+5. **Suppression heuristics are lexical** (added by issue #28, measured in
+   `docs/benchmarks/drift.md`): the sensitive-path tripwire is now
+   authorization-aware (explicit file mentions and a static area-keyword→glob
+   table, e.g. "workflow"/"ci" → `.github/workflows/**`), lockfile churn is
+   exempt under a dependency ask (`dep_ask_keywords` / `lockfile_paths` /
+   `manifest_paths`), broad-scope phrases ("everywhere", "refactor") defeat
+   the small-ask test, and a named test file vouches for its source under
+   test. These are keyword matches, not understanding: prose-described
+   companion files ("the email notification hook" → `src/email.rs`) and
+   short-but-legitimate broad asks ("fix the failing tests" touching 5 files)
+   still misclassify — both are for the deferred LLM layer. Measured at
+   91.3% precision / 95.5% recall on the 60-session benchmark.
 
 ## Out of scope (v1)
 
