@@ -1,19 +1,23 @@
 # dkod-cli
 
 The first product repo for the dkod project pivot. Captures every AI agent session
-(Claude Code, Codex) into custom git refs (`refs/dkod/sessions/<id>`) inside the
-user's repo. Pure Rust, gitoxide-backed, MIT licensed, distributed via cargo / curl
-install.sh / GitHub Releases.
+(Claude Code, Codex, Copilot CLI, Cursor, Factory droid, Gemini CLI, opencode) into
+custom git refs (`refs/dkod/sessions/<id>`) inside the user's repo. Pure Rust,
+gitoxide-backed, MIT licensed, distributed via cargo / curl install.sh / GitHub
+Releases.
 
 Sibling repos:
-- `dkod-app` — Tauri viewer (planned, not yet built)
-- `dkod-indexer` — hosted federated team-layer indexer / search (planned — this is
-  the revenue piece; see `docs/plans/2026-05-03-dkod-pivot-design.md` Section "dkod
-  Indexer")
-- `dkod-web` — landing + docs + dashboard (existing repo, repurpose pending)
+- `dkod-indexer` — hosted team-layer indexer / search (private repo; **deployed**
+  at dkod-indexer.fly.dev — this is the revenue piece). The GitLab+Gitea
+  multi-host work lives on its `feat/multi-git-host` branch (pushed to origin
+  2026-06-10).
+- `dkod-web` — landing + docs + dashboard (live site, pivot content merged)
+- `dkod-app` — Tauri viewer (dropped from near-term plans; see strategy v2)
 
 The full design lives in `docs/plans/2026-05-03-dkod-pivot-design.md`. The V1
 implementation plan lives in `docs/plans/2026-05-03-dkod-cli-v1-implementation.md`.
+The current strategy (direction, ICP, monetization, GTM, kill criteria) lives in
+`docs/plans/2026-06-10-dkod-strategy-v2.md`.
 
 ## Git identity (CRITICAL — every commit, every push, no exceptions)
 
