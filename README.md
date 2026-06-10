@@ -41,6 +41,7 @@ dkod show <id>         # full transcript of one session
 dkod blame <path>      # per line: which session (and prompt) wrote it
 dkod drift             # sessions where the agent exceeded its brief
 dkod drift <id> --card # shareable boxed card for one session
+dkod export agent-trace [<id>]  # sessions as Agent Trace records (docs/agent-trace.md)
 ```
 
 ### Import existing transcripts

@@ -66,6 +66,11 @@ enum Cmd {
         #[arg(long, requires = "session_id")]
         card: bool,
     },
+    /// Export sessions to an interop format
+    Export {
+        #[command(subcommand)]
+        format: ExportFormat,
+    },
     /// Rescue existing local agent transcripts into git refs (e.g. Claude
     /// Code transcripts expire after ~30 days). Idempotent — re-running
     /// skips sessions already captured.
@@ -117,6 +122,21 @@ enum Cmd {
     /// after a history rewrite. Not for direct use.
     #[command(hide = true)]
     Relink,
+}
+
+/// Interop formats for `dkod export`.
+#[derive(Subcommand)]
+enum ExportFormat {
+    /// Emit sessions as Agent Trace records — the open AI-attribution
+    /// format at <https://github.com/cursor/agent-trace> (spec v0.1.0).
+    AgentTrace {
+        /// Session id to export; omit to export every session in the repo.
+        session_id: Option<String>,
+        /// Output directory (one `<session-id>.json` per session), or `-`
+        /// to write a single record to stdout (requires a session id).
+        #[arg(long, default_value = "agent-traces")]
+        out: String,
+    },
 }
 
 /// Sources `dkod import` can rescue local transcripts from.
@@ -192,6 +212,9 @@ fn main() -> anyhow::Result<()> {
             all,
             card,
         } => cmd::drift::run(&std::env::current_dir()?, session_id.as_deref(), all, card),
+        Cmd::Export {
+            format: ExportFormat::AgentTrace { session_id, out },
+        } => cmd::export::run(&std::env::current_dir()?, session_id.as_deref(), &out),
         Cmd::Setup {
             scope,
             non_interactive,

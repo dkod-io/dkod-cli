@@ -1,6 +1,6 @@
 # Blog post draft — "dkod speaks Agent Trace"
 
-> **WHEN TO SEND / WHERE:** dkod.io blog, published the SAME WEEK as Show HN (weeks 3–4) — but ONLY once the Agent Trace export/import actually ships (months 2–4 build item #9). If the export isn't ready at HN time, hold the post; never publish ahead of the feature. Syndicate: link from the HN maker comment if live, X/Bluesky thread, lobste.rs. NEEDS HUMAN TO SEND (publish + syndication).
+> **WHEN TO SEND / WHERE:** dkod.io blog, published the SAME WEEK as Show HN (weeks 3–4). Export has shipped (`dkod export agent-trace`, spec v0.1.0 — see `docs/agent-trace.md`). Syndicate: link from the HN maker comment if live, X/Bluesky thread, lobste.rs. NEEDS HUMAN TO SEND (publish + syndication).
 
 ## Title
 
@@ -11,11 +11,12 @@ dkod speaks Agent Trace
 ## Post body
 
 ```markdown
-As of v0.X.X, dkod imports and exports [Agent Trace](https://github.com/cursor/agent-trace) —
-the open attribution format for AI-generated code. `dkod export --format
-agent-trace` emits standard trace records from any captured session, and
-`dkod import` ingests Agent Trace records produced by other tools into
-`refs/dkod/*` in your repo.
+As of v0.X.X, dkod exports [Agent Trace](https://github.com/cursor/agent-trace) —
+the open attribution format for AI-generated code (spec v0.1.0). `dkod export
+agent-trace` emits a standard trace record from any captured session — one
+JSON file per session, or a single record to stdout. Import — ingesting Agent
+Trace records produced by other tools into `refs/dkod/*` — is next on the
+roadmap.
 
 This post is about why we adopted someone else's format instead of pushing
 our own.
@@ -55,17 +56,20 @@ So dkod's position in the Agent Trace ecosystem is the natural one:
 
 **dkod is the git-native Agent Trace store.**
 
-- Any tool that emits Agent Trace records can have them preserved in-repo,
-  next to the full session transcript, via `dkod import`.
 - Anything dkod captures (7 agents today: Claude Code, Codex, Copilot CLI,
   Cursor, Factory droid, Gemini CLI, opencode) can flow OUT as Agent Trace
-  via `dkod export` — into dashboards, CI checks, review tools, whatever
-  speaks the format. No lock-in in either direction.
+  via `dkod export agent-trace` — into dashboards, CI checks, review tools,
+  whatever speaks the format. No export lock-in.
+- The other direction — preserving trace records other tools emit in-repo,
+  next to the full session transcript, via a `dkod import` — is the next
+  interop milestone.
 
 ## Trace records point; sessions answer
 
 One distinction worth keeping crisp: an Agent Trace record is a pointer —
-*this range, this agent, this conversation id*. It tells you who to ask.
+*this file, this agent, this session* (line ranges too, for tools that
+track them; dkod records file + commit granularity and honestly emits empty
+ranges rather than fabricated line spans). It tells you who to ask.
 The session is the answer — what the agent was asked, what it reasoned,
 what it tried and reverted, where it went beyond its brief.
 
@@ -82,8 +86,8 @@ everyone downstream — including us. Supporting Agent Trace keeps the format
 layer open and lets dkod compete where we actually differentiate: capture
 breadth, in-repo permanence, line-level blame, and drift.
 
-If you maintain a tool that emits or consumes Agent Trace and the
-round-trip through dkod loses anything, that's a bug — issues welcome:
+If you maintain a tool that consumes Agent Trace and dkod's export loses
+or misstates anything, that's a bug — issues welcome:
 https://github.com/dkod-io/dkod-cli
 
 Install: `brew install dkod-io/tap/dkod`
@@ -91,8 +95,10 @@ Install: `brew install dkod-io/tap/dkod`
 
 ## Notes for the founder
 
-- Replace `v0.X.X` with the actual release that ships export/import; verify
-  command names/flags against the implementation before publishing.
+- Replace `v0.X.X` with the actual release that ships the export. Command
+  shape verified against the implementation: `dkod export agent-trace
+  [<session-id>] [--out <dir>|-]` (see `docs/agent-trace.md` for the field
+  mapping and the spec pin: v0.1.0, repo commit `2754f077`).
 - Re-verify the Agent Trace participant list and spec activity at publish
   time (spec has been dormant since Feb 2026 — if that's still true, the
   "keeps the format layer open" framing gets stronger, but don't claim the
