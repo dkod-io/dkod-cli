@@ -66,6 +66,13 @@ enum Cmd {
         #[arg(long, requires = "session_id")]
         card: bool,
     },
+    /// Rescue existing local agent transcripts into git refs (e.g. Claude
+    /// Code transcripts expire after ~30 days). Idempotent — re-running
+    /// skips sessions already captured.
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
     /// Run the seamless capture wizard: detect installed AI agents and
     /// wire their hook config / PATH shim so dkod captures every session
     /// automatically. Re-run any time to refresh hooks; idempotent.
@@ -112,6 +119,27 @@ enum Cmd {
     Relink,
 }
 
+/// Sources `dkod import` can rescue local transcripts from.
+#[derive(Subcommand)]
+enum ImportSource {
+    /// Import Claude Code transcripts from ~/.claude/projects/<mapped-cwd>/
+    /// (set DKOD_CLAUDE_DIR to override the ~/.claude root).
+    ClaudeCode {
+        /// Source directory override (a directory of <session-id>.jsonl
+        /// transcripts). Defaults to the current repo's mapped project dir.
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+    },
+    /// Import Codex rollouts from $CODEX_HOME/sessions (default
+    /// ~/.codex/sessions). Only rollouts recorded in this repo are imported.
+    Codex {
+        /// Source directory override (scanned recursively for rollout
+        /// *.jsonl files).
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Self-heal runs on every dispatch except `Setup` itself
@@ -147,6 +175,14 @@ fn main() -> anyhow::Result<()> {
             other => Err(anyhow::anyhow!(
                 "unknown agent: {other} (supported: codex, claude-code, copilot-cli/copilot, cursor/cursor-agent, factory-ai/factory/droid, gemini-cli/gemini, opencode)"
             )),
+        },
+        Cmd::Import { source } => match source {
+            ImportSource::ClaudeCode { project } => {
+                cmd::import::run_claude_code(&std::env::current_dir()?, project.as_deref())
+            }
+            ImportSource::Codex { dir } => {
+                cmd::import::run_codex(&std::env::current_dir()?, dir.as_deref())
+            }
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
