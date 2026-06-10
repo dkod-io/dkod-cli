@@ -47,6 +47,7 @@ fn fixture_session(prompt: &str) -> dkod_core::Session {
         messages: vec![],
         commits: vec![],
         files_touched: vec![],
+        redaction_count: 0,
     }
 }
 

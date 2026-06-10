@@ -465,6 +465,7 @@ fn write_fixture_session(
         ],
         commits: vec![],
         files_touched: vec![],
+        redaction_count: 0,
     };
     let id = s.id.clone();
     dkod_core::store::write_session(repo, &s).unwrap_or_else(|e| panic!("write_session: {e}"));
@@ -527,6 +528,42 @@ fn show_prints_session_transcript() {
     assert!(
         stdout.contains("done"),
         "show should contain assistant content; got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("redactions:"),
+        "show should omit redactions line when the count is 0; got: {stdout}"
+    );
+}
+
+#[test]
+fn show_prints_redaction_count_when_nonzero() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    init_git_repo(tmp.path());
+
+    let s = dkod_core::Session {
+        id: dkod_core::Session::new_id(),
+        agent: dkod_core::Agent::Codex,
+        created_at: 1735689600,
+        duration_ms: 0,
+        prompt_summary: "fix bug".into(),
+        messages: vec![dkod_core::Message::user("[REDACTED:aws]")],
+        commits: vec![],
+        files_touched: vec![],
+        redaction_count: 2,
+    };
+    let id = s.id.clone();
+    dkod_core::store::write_session(tmp.path(), &s).unwrap();
+
+    let out = Command::cargo_bin("dkod")
+        .unwrap()
+        .current_dir(&tmp)
+        .args(["show", &id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("redactions: 2"),
+        "show should print the redaction audit count; got: {stdout}"
     );
 }
 

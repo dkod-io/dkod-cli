@@ -49,6 +49,7 @@ pub fn parse_events(events_path: &Path) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     let mut call_to_msg: std::collections::HashMap<String, usize> =
@@ -353,6 +354,7 @@ fn parse_stdout_events(events: &[serde_json::Value]) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     let mut call_to_msg: std::collections::HashMap<String, usize> =

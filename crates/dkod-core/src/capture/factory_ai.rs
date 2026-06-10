@@ -147,6 +147,7 @@ fn parse_event_records(events: &[serde_json::Value]) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     let mut call_to_msg: std::collections::HashMap<String, usize> =

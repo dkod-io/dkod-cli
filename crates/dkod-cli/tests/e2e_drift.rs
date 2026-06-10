@@ -49,6 +49,7 @@ fn seed(repo: &Path, prompt: &str, files: &[&str], commits: &[String]) -> String
         messages: vec![dkod_core::Message::user(prompt)],
         commits: commits.to_vec(),
         files_touched: files.iter().map(|s| s.to_string()).collect(),
+        redaction_count: 0,
     };
     dkod_core::store::write_session(repo, &s).unwrap();
     s.id

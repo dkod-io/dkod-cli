@@ -56,6 +56,7 @@ pub fn parse_rollout(rollout_path: &Path) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     // call_id -> index into session.messages, for matching function_call_output back to its tool message.
@@ -785,6 +786,7 @@ mod tests {
             // From apply_patch (already in order, with one path that the
             // worktree diff will also report).
             files_touched: vec!["a.txt".into(), "b.rs".into()],
+            redaction_count: 0,
         };
         // Pretend the worktree diff also picked up `b.rs` (overlap) plus a
         // brand-new path that apply_patch missed.

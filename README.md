@@ -22,6 +22,16 @@ Or with cargo:
 cargo install --git https://github.com/dkod-io/dkod-cli dkod-cli
 ```
 
+## Redaction
+
+Captured transcripts are scrubbed at capture time, on by default: known key
+formats (AWS, GitHub, OpenAI, Stripe), `ENV=value` assignments, a generic
+entropy-based rule for random credentials, plus your own custom patterns.
+Every replacement is tallied in a per-session audit count shown by
+`dkod show`. Redaction is best-effort, not a guarantee — see
+[`docs/redaction.md`](docs/redaction.md) for the full rule set and
+limitations.
+
 See `docs/plans/2026-05-03-dkod-pivot-design.md` for design context and
 `docs/plans/2026-05-03-dkod-cli-v1-implementation.md` for the implementation plan.
 

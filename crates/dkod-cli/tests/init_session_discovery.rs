@@ -83,6 +83,7 @@ fn seeded_clone() -> (TempDir, std::path::PathBuf, String) {
         messages: vec![],
         commits: vec![],
         files_touched: vec![],
+        redaction_count: 0,
     };
     dkod_core::store::write_session(&source, &session).unwrap();
     let sid = session.id.clone();

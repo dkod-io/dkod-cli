@@ -84,6 +84,7 @@ fn finalize_writes_patchid_ref_for_produced_commit() {
         messages: vec![],
         commits: vec![],
         files_touched: vec![],
+        redaction_count: 0,
     };
     let linked = finalize_session(repo.path(), &mut session, Some(&base), &cfg).unwrap();
     assert!(

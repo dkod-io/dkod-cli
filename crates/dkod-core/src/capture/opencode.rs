@@ -25,6 +25,7 @@ pub fn parse_output(json: &serde_json::Value) -> Result<Session> {
         messages: Vec::new(),
         commits: Vec::new(),
         files_touched: Vec::new(),
+        redaction_count: 0,
     };
 
     let msgs = json
