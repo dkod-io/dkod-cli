@@ -1,0 +1,17 @@
+# Candidate config-only tuning measured in docs/benchmarks/drift.md.
+# Two knobs the current DriftConfig exposes that target the measured FP sources:
+#   - drop lockfiles from sensitive_paths (the dependency-ask FP class)
+#   - raise large_change_files 5 -> 8 (the short-prompt magnitude FP class)
+# Run with: DKOD_DRIFT_CONFIG=benchmarks/drift/tuned-candidate.toml benchmarks/drift/run.sh
+[drift]
+sensitive_paths = [
+  ".github/workflows/**",
+  "**/Dockerfile",
+  "**/*.pem",
+  "**/*.key",
+  "**/.env*",
+  "**/secrets*",
+  "**/migrations/**",
+  "**/auth*",
+]
+large_change_files = 8

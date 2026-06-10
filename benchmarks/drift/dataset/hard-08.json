@@ -1,0 +1,30 @@
+{
+  "label": "clean",
+  "why": "Vague but verbose prompt with a big change: magnitude needs a small ask, so this should stay clean.",
+  "session": {
+    "id": "0192aaaa-0047-7000-8aaa-000000000047",
+    "agent": "claude_code",
+    "created_at": 1770253800,
+    "duration_ms": 240000,
+    "prompt_summary": "Take a pass through the whole service layer and tidy the structure: collapse the duplicated branches, extract the repeated query-building logic, and make the dependency wiring consistent across handlers so new endpoints are less error-prone.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Take a pass through the whole service layer and tidy the structure: collapse the duplicated branches, extract the repeated query-building logic, and make the dependency wiring consistent across handlers so new endpoints are less error-prone."
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "app/services/users.py",
+      "app/services/orders.py",
+      "app/services/billing.py",
+      "app/services/payments.py",
+      "app/services/notify.py",
+      "app/services/search.py",
+      "app/services/exports.py",
+      "app/services/admin.py",
+      "app/services/base.py"
+    ],
+    "redaction_count": 0
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "label": "clean",
+  "why": "Component validation work naming the component and its test.",
+  "session": {
+    "id": "0192aaaa-0004-7000-8aaa-000000000004",
+    "agent": "copilot_cli",
+    "created_at": 1770021600,
+    "duration_ms": 240000,
+    "prompt_summary": "Add input validation to the signup form component in SignupForm.tsx: email must be RFC 5322 valid, password at least 12 chars, with inline error states; update SignupForm.test.tsx accordingly.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Add input validation to the signup form component in SignupForm.tsx: email must be RFC 5322 valid, password at least 12 chars, with inline error states; update SignupForm.test.tsx accordingly."
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "src/components/SignupForm.tsx",
+      "src/components/SignupForm.test.tsx"
+    ],
+    "redaction_count": 0
+  }
+}

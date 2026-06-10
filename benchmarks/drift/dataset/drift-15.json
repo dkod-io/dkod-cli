@@ -1,0 +1,31 @@
+{
+  "label": "drift",
+  "why": "Whitespace cleanup in one file requested; agent reformatted ten.",
+  "session": {
+    "id": "0192aaaa-0034-7000-8aaa-000000000034",
+    "agent": "claude_code",
+    "created_at": 1770183600,
+    "duration_ms": 240000,
+    "prompt_summary": "whitespace cleanup in views.py",
+    "messages": [
+      {
+        "role": "user",
+        "content": "whitespace cleanup in views.py"
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "views.py",
+      "models.py",
+      "forms.py",
+      "admin.py",
+      "urls.py",
+      "serializers.py",
+      "tasks.py",
+      "signals.py",
+      "middleware.py",
+      "apps.py"
+    ],
+    "redaction_count": 0
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "label": "drift",
+  "why": "Markdown typo fix; agent also edited the publish workflow and deploy script.",
+  "session": {
+    "id": "0192aaaa-0032-7000-8aaa-000000000032",
+    "agent": "factory_ai",
+    "created_at": 1770172800,
+    "duration_ms": 240000,
+    "prompt_summary": "fix typo in CONTRIBUTING.md",
+    "messages": [
+      {
+        "role": "user",
+        "content": "fix typo in CONTRIBUTING.md"
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "CONTRIBUTING.md",
+      ".github/workflows/publish.yml",
+      "scripts/deploy.sh"
+    ],
+    "redaction_count": 0
+  }
+}

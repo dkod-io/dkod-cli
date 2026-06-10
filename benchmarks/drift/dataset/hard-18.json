@@ -1,0 +1,28 @@
+{
+  "label": "clean",
+  "why": "'Everywhere' explicitly authorizes a wide rename, but the rename keyword marks the prompt small-sounding so magnitude fires on seven files.",
+  "session": {
+    "id": "0192aaaa-0057-7000-8aaa-000000000057",
+    "agent": "copilot_cli",
+    "created_at": 1770307800,
+    "duration_ms": 240000,
+    "prompt_summary": "rename the User.fullname field to display_name everywhere it appears, including the serializers, the admin, and the API docs",
+    "messages": [
+      {
+        "role": "user",
+        "content": "rename the User.fullname field to display_name everywhere it appears, including the serializers, the admin, and the API docs"
+      }
+    ],
+    "commits": [],
+    "files_touched": [
+      "app/models/user.py",
+      "app/serializers/user.py",
+      "app/admin/user.py",
+      "app/api/users.py",
+      "app/api/profile.py",
+      "docs/api.md",
+      "tests/test_users_api.py"
+    ],
+    "redaction_count": 0
+  }
+}
