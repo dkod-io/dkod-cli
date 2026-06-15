@@ -714,6 +714,219 @@ pub fn head_sha(path: &Path) -> Option<String> {
         .map(|id| id.detach().to_string())
 }
 
+/// Outcome of folding legacy refs into the index (§10).
+#[derive(Debug)]
+pub struct ReindexReport {
+    pub sessions: usize,
+    pub commit_links: usize,
+    pub patchid_links: usize,
+    pub dry_run_only: bool,
+}
+
+/// Blob oid of `body.json` for `id` at the index `root`, or `None` when the
+/// session is absent. Resolves the date directory directly for v7 ids and
+/// scans the date directories for non-v7/foreign ids (mirroring `read_session`,
+/// §6.2) so the reindex idempotency check holds for both.
+fn index_body_oid(
+    repo: &gix::Repository,
+    root: Option<gix::ObjectId>,
+    id: &str,
+) -> Option<gix::ObjectId> {
+    let root = root?;
+    let path = index::body_path(id)
+        .filter(|p| index::blob_oid_at(repo, root, p).is_some())
+        .or_else(|| {
+            index::find_session_dir_by_scan(repo, root, id).map(|d| format!("{d}/body.json"))
+        })?;
+    index::blob_oid_at(repo, root, &path)
+}
+
+/// Read the `Session` id a legacy `refs/dkod/{commits,patchid}/*` ref names,
+/// caching parses by the target blob oid so a session linked to many commits is
+/// only deserialized once.
+fn legacy_pointer_session_id(
+    repo: &gix::Repository,
+    blob_id: gix::ObjectId,
+    cache: &mut std::collections::HashMap<gix::ObjectId, Option<String>>,
+) -> Option<String> {
+    if let Some(hit) = cache.get(&blob_id) {
+        return hit.clone();
+    }
+    let id = repo
+        .find_object(blob_id)
+        .ok()
+        .and_then(|o| serde_json::from_slice::<Session>(&o.detach().data).ok())
+        .map(|s| s.id);
+    cache.insert(blob_id, id.clone());
+    id
+}
+
+/// Fold every local legacy ref (`refs/dkod/{sessions,commits,patchid}/*`) and
+/// outbox spill into the index as ONE batched commit
+/// (`dkod: reindex <n> legacy session(s)`). Body bytes are copied verbatim
+/// (same content — no new storage, §10.2); link refs become pointer blobs.
+/// Idempotent: already-present paths are skipped at the oid level, and a
+/// fully-indexed repo produces no commit. Counts report what was MISSING from
+/// the index before the run. On success, `.dkod/config.toml` gains
+/// `format = "v2"` (best-effort).
+pub fn reindex_legacy_refs(repo_path: &Path, dry_run: bool) -> Result<ReindexReport> {
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    ensure_committer(&mut repo)?;
+
+    // Snapshot the current index root (if any) so we can skip already-present
+    // entries at the oid level.
+    let root = index::index_tip(&repo).and_then(|tip| index::commit_tree(&repo, tip).ok());
+
+    let mut batch = index::IndexBatch::new(String::new());
+    let mut sessions = 0usize;
+    let mut commit_links = 0usize;
+    let mut patchid_links = 0usize;
+    let mut blob_id_cache: std::collections::HashMap<gix::ObjectId, Option<String>> =
+        std::collections::HashMap::new();
+
+    // Sessions: fold each legacy session blob into the index. Skip when the
+    // index already holds an identical body for the id. The oid-level check
+    // works because `push_session_inserts` re-serializes the same `Session`
+    // with serde_json's deterministic output, so a re-run produces the same
+    // blob oid the legacy ref points at — idempotent within a codebase version
+    // (verified by the e2e reindex test).
+    for r in repo
+        .references()
+        .context("list refs")?
+        .prefixed("refs/dkod/sessions/")
+        .context("filter session refs")?
+    {
+        let r = r
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("walk session ref")?;
+        let blob_id = r.id().detach();
+        let Some(session) = repo
+            .find_object(blob_id)
+            .ok()
+            .and_then(|o| serde_json::from_slice::<Session>(&o.detach().data).ok())
+        else {
+            eprintln!(
+                "dkod reindex: skipping unparseable session ref {}",
+                r.name().as_bstr()
+            );
+            continue;
+        };
+        if index_body_oid(&repo, root, &session.id) == Some(blob_id) {
+            continue;
+        }
+        push_session_inserts(&mut batch, &session)?;
+        sessions += 1;
+    }
+
+    // Commit links: ref-name suffix is the sha; pointer blob names the session.
+    for r in repo
+        .references()
+        .context("list refs")?
+        .prefixed("refs/dkod/commits/")
+        .context("filter commit refs")?
+    {
+        let r = r
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("walk commit ref")?;
+        let name = r.name().as_bstr().to_string();
+        let Some(sha) = name.strip_prefix("refs/dkod/commits/") else {
+            continue;
+        };
+        if sha.len() < 3 {
+            continue;
+        }
+        let Some(id) = legacy_pointer_session_id(&repo, r.id().detach(), &mut blob_id_cache) else {
+            continue;
+        };
+        let path = index::commit_pointer_path(sha);
+        if root
+            .and_then(|root| index::blob_oid_at(&repo, root, &path))
+            .is_some()
+        {
+            continue;
+        }
+        batch.insert(path, pointer_blob(&id));
+        commit_links += 1;
+    }
+
+    // Patch-id links: same shape against `refs/dkod/patchid/*`.
+    for r in repo
+        .references()
+        .context("list refs")?
+        .prefixed("refs/dkod/patchid/")
+        .context("filter patchid refs")?
+    {
+        let r = r
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("walk patchid ref")?;
+        let name = r.name().as_bstr().to_string();
+        let Some(pid) = name.strip_prefix("refs/dkod/patchid/") else {
+            continue;
+        };
+        if pid.len() < 3 {
+            continue;
+        }
+        let Some(id) = legacy_pointer_session_id(&repo, r.id().detach(), &mut blob_id_cache) else {
+            continue;
+        };
+        let path = index::patchid_pointer_path(pid);
+        if root
+            .and_then(|root| index::blob_oid_at(&repo, root, &path))
+            .is_some()
+        {
+            continue;
+        }
+        batch.insert(path, pointer_blob(&id));
+        patchid_links += 1;
+    }
+
+    // Fold any spilled outbox sessions into the same batch.
+    let consumed = fold_outbox(repo_path, &mut batch);
+
+    if dry_run {
+        return Ok(ReindexReport {
+            sessions,
+            commit_links,
+            patchid_links,
+            dry_run_only: true,
+        });
+    }
+
+    batch.message = format!("dkod: reindex {sessions} legacy session(s)");
+    index::apply_batch(repo_path, &batch).context("reindex apply batch")?;
+    for p in &consumed {
+        let _ = std::fs::remove_file(p);
+    }
+
+    // Stamp `format = "v2"` into `.dkod/config.toml` (best-effort).
+    if let Err(e) = stamp_storage_format_v2(repo_path) {
+        eprintln!("dkod reindex: could not stamp storage format ({e:#})");
+    }
+
+    Ok(ReindexReport {
+        sessions,
+        commit_links,
+        patchid_links,
+        dry_run_only: false,
+    })
+}
+
+/// Set `[storage] format = "v2"` in `<repo>/.dkod/config.toml`, preserving any
+/// existing config. Best-effort signal that `dkod reindex` has run (§10).
+fn stamp_storage_format_v2(repo_path: &Path) -> Result<()> {
+    let dir = repo_path.join(".dkod");
+    let path = dir.join("config.toml");
+    let mut cfg: crate::config::Config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|body| toml::from_str(&body).ok())
+        .unwrap_or_default();
+    cfg.storage.format = Some("v2".into());
+    std::fs::create_dir_all(&dir).context("create .dkod dir")?;
+    let body = toml::to_string_pretty(&cfg).context("serialize config")?;
+    std::fs::write(&path, body).context("write .dkod/config.toml")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1475,5 +1688,108 @@ mod tests {
             .unwrap();
         let m2 = read_session_meta(tmp.path(), &s.id).unwrap();
         assert_eq!(m2.id, s.id, "derived from the legacy blob");
+    }
+
+    #[test]
+    fn reindex_legacy_refs_folds_sessions_and_links_idempotently() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        // Pure-legacy repo: disable index writes is not possible via public API,
+        // so seed via the legacy halves: write_session + links, then delete the
+        // index ref so only legacy refs remain.
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let sha = "00000000000000000000000000000000000000dd";
+        let pid = "3333333333333333333333333333333333333333";
+        link_session_to_commit(tmp.path(), &s.id, sha).unwrap();
+        link_session_to_patchid(tmp.path(), &s.id, pid).unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        repo.find_reference(crate::index::INDEX_REF)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let report = reindex_legacy_refs(tmp.path(), false).unwrap();
+        assert_eq!(report.sessions, 1);
+        assert_eq!(report.commit_links, 1);
+        assert_eq!(report.patchid_links, 1);
+        assert!(!report.dry_run_only);
+
+        // session readable from the index alone
+        let repo = gix::open(tmp.path()).unwrap();
+        let tip = crate::index::index_tip(&repo).expect("index rebuilt");
+        let root = crate::index::commit_tree(&repo, tip).unwrap();
+        // body bytes verbatim → same content as the legacy blob (§10.2)
+        let body =
+            crate::index::read_tree_blob(&repo, root, &crate::index::body_path(&s.id).unwrap())
+                .unwrap();
+        assert_eq!(serde_json::from_slice::<Session>(&body).unwrap(), s);
+
+        // idempotent: second run writes nothing
+        let again = reindex_legacy_refs(tmp.path(), false).unwrap();
+        assert_eq!(again.sessions, 0, "already indexed → no new inserts");
+        assert_eq!(
+            crate::index::index_tip(&gix::open(tmp.path()).unwrap()),
+            Some(tip),
+            "no empty commit"
+        );
+    }
+
+    #[test]
+    fn reindex_dry_run_reports_without_writing() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        repo.find_reference(crate::index::INDEX_REF)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let report = reindex_legacy_refs(tmp.path(), true).unwrap();
+        assert_eq!(report.sessions, 1);
+        assert!(report.dry_run_only);
+        assert!(
+            crate::index::index_tip(&gix::open(tmp.path()).unwrap()).is_none(),
+            "dry run wrote nothing"
+        );
+    }
+
+    #[test]
+    fn reindex_is_idempotent_for_non_v7_foreign_ids() {
+        // A foreign (non-v7) id lands under sessions/<date>/<id> via created_at;
+        // its body.json path is NOT computable from the id alone, so the
+        // idempotency check must scan date dirs — a second run must fold 0.
+        let tmp = TempDir::new().unwrap();
+        let repo = gix::init(tmp.path()).unwrap();
+        let mut s = fixture_session();
+        s.id = "foreign-import-xyz".into();
+        s.created_at = 1735689600;
+        let blob = repo
+            .write_blob(serde_json::to_vec(&s).unwrap())
+            .unwrap()
+            .detach();
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+        use gix::refs::Target;
+        repo.edit_reference(RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: "seed".into(),
+                },
+                expected: PreviousValue::Any,
+                new: Target::Object(blob),
+            },
+            name: crate::refs::session_ref(&s.id).try_into().unwrap(),
+            deref: false,
+        })
+        .unwrap();
+
+        let first = reindex_legacy_refs(tmp.path(), false).unwrap();
+        assert_eq!(first.sessions, 1);
+        let again = reindex_legacy_refs(tmp.path(), false).unwrap();
+        assert_eq!(again.sessions, 0, "non-v7 id must be detected as present");
     }
 }
