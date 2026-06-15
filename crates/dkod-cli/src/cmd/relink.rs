@@ -38,20 +38,22 @@ pub(crate) fn parse_pairs(input: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Read stdin, parse pairs, and re-link each. Best-effort: per-pair errors are
-/// ignored and the command always returns `Ok(())`.
+/// Read stdin, parse pairs, and re-link them as ONE batched index commit.
+/// Best-effort: a relink failure must never break the user's rebase, so the
+/// command always returns `Ok(())`.
 pub fn run(cwd: &Path) -> Result<()> {
     let mut buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut buf); // best-effort
     let pairs = parse_pairs(&buf);
-    let mut relinked = 0usize;
-    for (old, new) in &pairs {
-        if let Ok(true) = dkod_core::store::relink_commit(cwd, old, new) {
-            relinked += 1;
-        }
+    if pairs.is_empty() {
+        return Ok(());
     }
-    if relinked > 0 {
-        eprintln!("dkod: re-linked {relinked} session commit-ref(s) after history rewrite");
+    match dkod_core::store::relink_commits(cwd, &pairs) {
+        Ok(n) if n > 0 => {
+            eprintln!("dkod: re-linked {n} session commit-ref(s) after history rewrite")
+        }
+        Ok(_) => {}
+        Err(_) => {} // never break the user's rebase
     }
     Ok(())
 }

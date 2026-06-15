@@ -277,12 +277,19 @@ pub fn write_session_full(
 pub fn read_session(repo_path: &Path, id: &str) -> Result<Session> {
     let repo = gix::open(repo_path).context("open repo")?;
 
-    // Index-first: locate body.json at the current index tip.
+    // Index-first: locate body.json at the current index tip. v7 ids resolve
+    // their date directory directly; non-v7/foreign ids fall back to a
+    // date-dir scan (§6.2).
     if let Some(tip) = index::index_tip(&repo) {
         if let Ok(root) = index::commit_tree(&repo, tip) {
-            if let Some(bytes) =
-                index::body_path(id).and_then(|p| index::read_tree_blob(&repo, root, &p))
-            {
+            let body = index::body_path(id)
+                .and_then(|p| index::read_tree_blob(&repo, root, &p))
+                .or_else(|| {
+                    index::find_session_dir_by_scan(&repo, root, id).and_then(|dir| {
+                        index::read_tree_blob(&repo, root, &format!("{dir}/body.json"))
+                    })
+                });
+            if let Some(bytes) = body {
                 return serde_json::from_slice(&bytes).context("deserialize session (index)");
             }
         }
@@ -295,6 +302,96 @@ pub fn read_session(repo_path: &Path, id: &str) -> Result<Session> {
     let object = repo.find_object(r.id()).context("find object")?.detach();
     let session: Session = serde_json::from_slice(&object.data).context("deserialize session")?;
     Ok(session)
+}
+
+/// Session header for `id`: `meta.json` at the index tip (parsed directly),
+/// else derived from the legacy session blob (§6.2). `None` only when the
+/// session exists nowhere.
+fn meta_for_id(repo: &gix::Repository, id: &str) -> Option<SessionMeta> {
+    // Index half: prefer the stored meta.json; fall back to body.json (direct
+    // v7 path, then a date-dir scan for foreign ids) and derive from it.
+    if let Some(tip) = index::index_tip(repo) {
+        if let Ok(root) = index::commit_tree(repo, tip) {
+            if let Some(bytes) =
+                index::meta_path(id).and_then(|p| index::read_tree_blob(repo, root, &p))
+            {
+                if let Ok(meta) = serde_json::from_slice::<SessionMeta>(&bytes) {
+                    return Some(meta);
+                }
+            }
+            let dir = index::session_dir(id)
+                .filter(|d| index::read_tree_blob(repo, root, &format!("{d}/body.json")).is_some())
+                .or_else(|| index::find_session_dir_by_scan(repo, root, id));
+            if let Some(dir) = dir {
+                if let Some(body) = index::read_tree_blob(repo, root, &format!("{dir}/body.json")) {
+                    if let Ok(s) = serde_json::from_slice::<Session>(&body) {
+                        return Some(SessionMeta::derive(&s, body.len() as u64));
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy half: derive the header from the session blob.
+    let r = repo.try_find_reference(&refs::session_ref(id)).ok()??;
+    let data = repo.find_object(r.id()).ok()?.detach().data;
+    let s: Session = serde_json::from_slice(&data).ok()?;
+    Some(SessionMeta::derive(&s, data.len() as u64))
+}
+
+/// Resolve an index pointer path (e.g. `commits/<fanout>`) to the session id it
+/// names. `None` when there is no index ref or the path is absent.
+fn pointer_session_id(repo: &gix::Repository, path: &str) -> Option<String> {
+    let tip = index::index_tip(repo)?;
+    let root = index::commit_tree(repo, tip).ok()?;
+    let bytes = index::read_tree_blob(repo, root, path)?;
+    Some(String::from_utf8_lossy(&bytes).trim_end().to_string())
+}
+
+/// Derive a `SessionMeta` from a legacy blob the ref `ref_name` points at.
+fn meta_from_legacy_ref(repo: &gix::Repository, ref_name: &str) -> Option<SessionMeta> {
+    let r = repo.try_find_reference(ref_name).ok()??;
+    let data = repo.find_object(r.id()).ok()?.detach().data;
+    let s: Session = serde_json::from_slice(&data).ok()?;
+    Some(SessionMeta::derive(&s, data.len() as u64))
+}
+
+/// Session header for `id`: `meta.json` at the index tip, else derived from
+/// the legacy session blob (§6.2). Errors only when the session exists
+/// nowhere.
+pub fn read_session_meta(repo_path: &Path, id: &str) -> Result<SessionMeta> {
+    let repo = gix::open(repo_path).context("open repo")?;
+    meta_for_id(&repo, id).ok_or_else(|| anyhow::anyhow!("session {id} not found"))
+}
+
+/// Blame primary lookup (§6.1): `commits/<fanout(sha)>` pointer → meta; legacy
+/// `refs/dkod/commits/<sha>` → derived meta. `None` = human commit.
+pub fn lookup_commit_session(repo_path: &Path, sha: &str) -> Option<SessionMeta> {
+    if sha.len() < 3 {
+        return None;
+    }
+    let repo = gix::open(repo_path).ok()?;
+    if let Some(id) = pointer_session_id(&repo, &index::commit_pointer_path(sha)) {
+        if let Some(meta) = meta_for_id(&repo, &id) {
+            return Some(meta);
+        }
+    }
+    meta_from_legacy_ref(&repo, &refs::commit_ref(sha))
+}
+
+/// Blame patch-id fallback: `patchid/<fanout(pid)>` pointer → meta; legacy
+/// `refs/dkod/patchid/<pid>` → derived meta.
+pub fn lookup_patchid_session(repo_path: &Path, pid: &str) -> Option<SessionMeta> {
+    if pid.len() < 3 {
+        return None;
+    }
+    let repo = gix::open(repo_path).ok()?;
+    if let Some(id) = pointer_session_id(&repo, &index::patchid_pointer_path(pid)) {
+        if let Some(meta) = meta_for_id(&repo, &id) {
+            return Some(meta);
+        }
+    }
+    meta_from_legacy_ref(&repo, &refs::patchid_ref(pid))
 }
 
 /// Point a dkod ref at `blob_id` (creating or overwriting it). Shared by the
@@ -513,11 +610,14 @@ pub fn relink_commits(repo_path: &Path, pairs: &[(String, String)]) -> Result<us
     Ok(resolved.len())
 }
 
-/// Enumerate all sessions stored under `refs/dkod/sessions/*` in this repo.
-/// Returns the bare session ids (the part after the namespace prefix).
+/// Enumerate every session id in this repo: the union of the rollup index
+/// (`refs/dkod/index`) and the legacy `refs/dkod/sessions/*` refs, deduped by
+/// id (§6.2). Sorted (BTreeSet) — a session present in both halves under
+/// dual-write appears exactly once.
 pub fn list_sessions(repo_path: &Path) -> Result<Vec<String>> {
     let repo = gix::open(repo_path).context("open repo")?;
-    let mut ids = Vec::new();
+    let mut ids: std::collections::BTreeSet<String> =
+        index::list_index_session_ids(&repo).into_iter().collect();
     for r in repo
         .references()
         .context("list refs")?
@@ -529,10 +629,10 @@ pub fn list_sessions(repo_path: &Path) -> Result<Vec<String>> {
             .context("walk session ref")?;
         let name = r.name().as_bstr().to_string();
         if let Some(id) = refs::parse_session_ref(&name) {
-            ids.push(id);
+            ids.insert(id);
         }
     }
-    Ok(ids)
+    Ok(ids.into_iter().collect())
 }
 
 /// Commit SHAs reachable from the repo's current HEAD but NOT reachable from
@@ -1229,5 +1329,151 @@ mod tests {
         }
         // legacy new refs written too (dual-write ON)
         assert!(repo.find_reference(&crate::refs::commit_ref(new1)).is_ok());
+    }
+
+    #[test]
+    fn read_session_falls_back_to_legacy_ref_when_index_lacks_it() {
+        // plumbing-style legacy-only repo: blob + session ref, NO index commit —
+        // exactly what benchmarks/drift/run.sh produces.
+        let tmp = TempDir::new().unwrap();
+        let repo = gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        let bytes = serde_json::to_vec(&s).unwrap();
+        let blob = repo.write_blob(&bytes).unwrap().detach();
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+        use gix::refs::Target;
+        repo.edit_reference(RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: "seed".into(),
+                },
+                expected: PreviousValue::Any,
+                new: Target::Object(blob),
+            },
+            name: crate::refs::session_ref(&s.id).try_into().unwrap(),
+            deref: false,
+        })
+        .unwrap();
+
+        assert!(
+            crate::index::index_tip(&repo).is_none(),
+            "no index ref in this fixture"
+        );
+        assert_eq!(read_session(tmp.path(), &s.id).unwrap(), s);
+        assert_eq!(list_sessions(tmp.path()).unwrap(), vec![s.id.clone()]);
+    }
+
+    #[test]
+    fn read_session_finds_non_v7_id_via_date_scan() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".dkod")).unwrap();
+        std::fs::write(
+            tmp.path().join(".dkod/config.toml"),
+            "[storage]\nwrite_legacy_refs = false\n", // index-only: forces the scan path
+        )
+        .unwrap();
+        let mut s = fixture_session();
+        s.id = "foreign-import-001".into();
+        s.created_at = 1735689600;
+        write_session(tmp.path(), &s).unwrap();
+        assert_eq!(read_session(tmp.path(), &s.id).unwrap(), s);
+        assert_eq!(list_sessions(tmp.path()).unwrap(), vec![s.id.clone()]);
+    }
+
+    #[test]
+    fn list_sessions_unions_index_and_legacy_dedup_by_id() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session(); // dual-write ON → in BOTH index and legacy refs
+        write_session(tmp.path(), &s).unwrap();
+        assert_eq!(
+            list_sessions(tmp.path()).unwrap(),
+            vec![s.id.clone()],
+            "no duplicate"
+        );
+    }
+
+    #[test]
+    fn lookup_commit_session_resolves_via_index_pointer() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let mut s = fixture_session();
+        let sha = "00000000000000000000000000000000000000aa".to_string();
+        write_session_full(tmp.path(), &mut s, std::slice::from_ref(&sha), &[]).unwrap();
+        let meta = lookup_commit_session(tmp.path(), &sha).expect("resolved");
+        assert_eq!(meta.id, s.id);
+        assert_eq!(meta.prompt_summary, s.prompt_summary);
+    }
+
+    #[test]
+    fn lookup_commit_session_falls_back_to_legacy_ref() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        // legacy-only seeding (write_session_legacy path): use the public fns,
+        // then delete the index ref to simulate a legacy-only repo.
+        write_session(tmp.path(), &s).unwrap();
+        link_session_to_commit(
+            tmp.path(),
+            &s.id,
+            "00000000000000000000000000000000000000bb",
+        )
+        .unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        repo.find_reference(crate::index::INDEX_REF)
+            .unwrap()
+            .delete()
+            .unwrap();
+        let meta = lookup_commit_session(tmp.path(), "00000000000000000000000000000000000000bb")
+            .expect("legacy fallback");
+        assert_eq!(meta.id, s.id);
+    }
+
+    #[test]
+    fn lookup_patchid_session_resolves_index_then_legacy() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let mut s = fixture_session();
+        let sha = "00000000000000000000000000000000000000cc".to_string();
+        let pid = "2222222222222222222222222222222222222222".to_string();
+        write_session_full(
+            tmp.path(),
+            &mut s,
+            std::slice::from_ref(&sha),
+            &[(sha.clone(), pid.clone())],
+        )
+        .unwrap();
+        assert_eq!(lookup_patchid_session(tmp.path(), &pid).unwrap().id, s.id);
+        let repo = gix::open(tmp.path()).unwrap();
+        repo.find_reference(crate::index::INDEX_REF)
+            .unwrap()
+            .delete()
+            .unwrap();
+        assert_eq!(
+            lookup_patchid_session(tmp.path(), &pid).unwrap().id,
+            s.id,
+            "legacy fallback"
+        );
+    }
+
+    #[test]
+    fn read_session_meta_prefers_index_and_derives_from_legacy() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let m = read_session_meta(tmp.path(), &s.id).unwrap();
+        assert_eq!(m.id, s.id);
+        assert!(m.body_bytes > 0);
+        let repo = gix::open(tmp.path()).unwrap();
+        repo.find_reference(crate::index::INDEX_REF)
+            .unwrap()
+            .delete()
+            .unwrap();
+        let m2 = read_session_meta(tmp.path(), &s.id).unwrap();
+        assert_eq!(m2.id, s.id, "derived from the legacy blob");
     }
 }

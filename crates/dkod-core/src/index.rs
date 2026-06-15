@@ -224,7 +224,6 @@ pub(crate) fn read_tree_blob(
 
 /// Names of the SUBTREE entries directly under `dir` ("" = root), sorted.
 /// Used to walk `sessions/<date>/<id>` (§6.1) and gc candidates (§8).
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 pub(crate) fn list_tree_dir(
     repo: &gix::Repository,
     root: gix::ObjectId,
@@ -248,6 +247,40 @@ pub(crate) fn list_tree_dir(
         .collect();
     names.sort();
     Ok(names)
+}
+
+/// All session ids in the index (sorted date-dir walk → chronological for v7
+/// ids). Empty when there is no index ref.
+pub fn list_index_session_ids(repo: &gix::Repository) -> Vec<String> {
+    let Some(tip) = index_tip(repo) else {
+        return Vec::new();
+    };
+    let Ok(root) = commit_tree(repo, tip) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for date in list_tree_dir(repo, root, "sessions").unwrap_or_default() {
+        for id in list_tree_dir(repo, root, &format!("sessions/{date}")).unwrap_or_default() {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// Locate a session dir by scanning every date directory — the non-v7-id
+/// fallback (§6.2). O(date-dirs); only hit for foreign/hand-rolled ids.
+pub(crate) fn find_session_dir_by_scan(
+    repo: &gix::Repository,
+    root: gix::ObjectId,
+    id: &str,
+) -> Option<String> {
+    for date in list_tree_dir(repo, root, "sessions").ok()? {
+        let dir = format!("sessions/{date}/{id}");
+        if blob_oid_at(repo, root, &format!("{dir}/body.json")).is_some() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /// One logical index write: ordered `(tree_path, blob_bytes)` inserts applied
