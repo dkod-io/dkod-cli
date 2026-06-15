@@ -104,3 +104,50 @@ fn finalize_with_none_head_links_nothing_but_writes_session() {
         session.id
     );
 }
+
+#[test]
+fn finalize_writes_one_index_commit_covering_session_links_and_patchids() {
+    let repo = TempDir::new().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    std::fs::write(repo.path().join("f.txt"), "a\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-qm", "A"]);
+    let a = head(repo.path());
+    std::fs::write(repo.path().join("f.txt"), "a\nb\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-qm", "B"]);
+    let b = head(repo.path());
+
+    let cfg = dkod_core::config::Config::default();
+    let mut session = fixture_session("one batched commit");
+    finalize_session(repo.path(), &mut session, Some(&a), &cfg).unwrap();
+
+    // exactly ONE commit on refs/dkod/index (root, no parent)
+    let gx = gix::open(repo.path()).unwrap();
+    let tip = gx
+        .try_find_reference("refs/dkod/index")
+        .unwrap()
+        .expect("index ref")
+        .id()
+        .detach();
+    let c = gx.find_object(tip).unwrap().try_into_commit().unwrap();
+    assert_eq!(
+        c.parent_ids().count(),
+        0,
+        "session + commit link + patchid link batched"
+    );
+    let msg = c.message_raw().unwrap().to_string();
+    assert!(msg.contains("1 commit(s)"), "message: {msg}");
+
+    // legacy patchid ref still exists (dual-write ON, finalize parity)
+    let out = std::process::Command::new("git")
+        .args(["for-each-ref", "refs/dkod/patchid/"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "legacy patchid link missing"
+    );
+    let _ = b;
+}
