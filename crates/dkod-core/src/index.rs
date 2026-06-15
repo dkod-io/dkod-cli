@@ -6,6 +6,7 @@
 //! permanent legacy read fallback.
 
 use anyhow::{anyhow, Context, Result};
+use std::path::Path;
 
 /// The single v2 ref (§4.1). Points at a commit; parent = previous tip.
 pub const INDEX_REF: &str = "refs/dkod/index";
@@ -87,7 +88,6 @@ pub fn patchid_pointer_path(pid: &str) -> String {
 }
 
 /// Decode a tree object into owned entries. Empty Vec for `None`.
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 fn tree_entries(
     repo: &gix::Repository,
     tree: Option<gix::ObjectId>,
@@ -115,7 +115,6 @@ fn tree_entries(
 
 /// Write a tree from entries (sorted into git's canonical tree order via
 /// `Entry: Ord`, which honors the directory-sorts-as-`name/` rule).
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 fn write_tree(
     repo: &gix::Repository,
     mut entries: Vec<gix::objs::tree::Entry>,
@@ -131,7 +130,6 @@ fn write_tree(
 /// components trees) to point at `blob`, returning the new ROOT tree oid.
 /// `root = None` starts from an empty tree. A non-tree in an intermediate
 /// position is an error (corrupt index — never silently overwritten).
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 pub(crate) fn upsert_path(
     repo: &gix::Repository,
     root: Option<gix::ObjectId>,
@@ -145,7 +143,6 @@ pub(crate) fn upsert_path(
     upsert_segments(repo, root, &segments, blob)
 }
 
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 fn upsert_segments(
     repo: &gix::Repository,
     tree: Option<gix::ObjectId>,
@@ -194,7 +191,6 @@ fn upsert_segments(
 
 /// Resolve `path` under the ROOT TREE `root` to its blob oid. `None` when any
 /// component is absent or the leaf is not a blob.
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 pub(crate) fn blob_oid_at(
     repo: &gix::Repository,
     root: gix::ObjectId,
@@ -253,6 +249,236 @@ pub(crate) fn list_tree_dir(
         .collect();
     names.sort();
     Ok(names)
+}
+
+/// One logical index write: ordered `(tree_path, blob_bytes)` inserts applied
+/// to the current tip's tree in a single read-modify-write, producing one
+/// child commit (§5.1).
+pub struct IndexBatch {
+    pub message: String,
+    inserts: Vec<(String, Vec<u8>)>,
+}
+
+impl IndexBatch {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            inserts: Vec::new(),
+        }
+    }
+    pub fn insert(&mut self, path: String, bytes: Vec<u8>) {
+        self.inserts.push((path, bytes));
+    }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inserts.is_empty()
+    }
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inserts.len()
+    }
+}
+
+/// Current `refs/dkod/index` tip commit, if the ref exists.
+pub fn index_tip(repo: &gix::Repository) -> Option<gix::ObjectId> {
+    let r = repo.try_find_reference(INDEX_REF).ok()??;
+    Some(r.id().detach())
+}
+
+/// ROOT TREE oid of an index commit.
+pub(crate) fn commit_tree(repo: &gix::Repository, tip: gix::ObjectId) -> Result<gix::ObjectId> {
+    let commit = repo
+        .find_object(tip)
+        .context("find index commit")?
+        .try_into_commit()
+        .map_err(|e| anyhow!("index tip is not a commit: {e}"))?;
+    Ok(commit.tree_id().context("index commit tree id")?.detach())
+}
+
+/// The repo's committer signature (guaranteed present after
+/// `store::ensure_committer`) as an owned `gix::actor::Signature`.
+fn signature(repo: &gix::Repository) -> Result<gix::actor::Signature> {
+    let sig = repo
+        .committer()
+        .ok_or_else(|| anyhow!("no committer configured (ensure_committer not called)"))?
+        .map_err(|e| anyhow!("committer time: {e}"))?;
+    Ok(sig.to_owned())
+}
+
+/// Write the COMMIT OBJECT applying `inserts` (path → existing blob oid) on
+/// top of `parent`'s tree, WITHOUT touching any ref. Seeds `version`/`epoch`
+/// blobs when `parent` is `None` (new root). Returns `Ok(None)` when every
+/// insert is already present with the same oid (no object written — the
+/// idempotence rule of §10.3).
+pub(crate) fn build_commit(
+    repo: &gix::Repository,
+    parent: Option<gix::ObjectId>,
+    inserts: &[(String, gix::ObjectId)],
+    message: &str,
+) -> Result<Option<gix::ObjectId>> {
+    let old_root = match parent {
+        Some(p) => Some(commit_tree(repo, p)?),
+        None => None,
+    };
+    let mut root = old_root;
+    if parent.is_none() {
+        let version = repo
+            .write_blob(INDEX_VERSION.as_bytes())
+            .context("write version blob")?
+            .detach();
+        let epoch = repo
+            .write_blob(b"0\n")
+            .context("write epoch blob")?
+            .detach();
+        root = Some(upsert_path(repo, root, "version", version)?);
+        root = Some(upsert_path(repo, root.take(), "epoch", epoch)?);
+    }
+    for (path, oid) in inserts {
+        let already = root.and_then(|r| blob_oid_at(repo, r, path));
+        if already == Some(*oid) {
+            continue; // idempotent skip
+        }
+        root = Some(upsert_path(repo, root, path, *oid)?);
+    }
+    let Some(new_root) = root else {
+        return Ok(None);
+    };
+    if old_root == Some(new_root) {
+        return Ok(None); // nothing changed → no empty commit
+    }
+    let sig = signature(repo)?;
+    let commit = gix::objs::Commit {
+        tree: new_root,
+        parents: parent.into_iter().collect(),
+        author: sig.clone(),
+        committer: sig,
+        encoding: None,
+        message: message.into(),
+        extra_headers: Vec::new(),
+    };
+    Ok(Some(
+        repo.write_object(&commit)
+            .context("write index commit")?
+            .detach(),
+    ))
+}
+
+/// `build_commit` + move `refs/dkod/index` from `expected_tip` to the new
+/// commit with compare-and-swap semantics (§5.3 layer 2). `expected_tip =
+/// None` requires the ref to not exist yet.
+pub(crate) fn commit_inserts(
+    repo: &gix::Repository,
+    parent: Option<gix::ObjectId>,
+    expected_tip: Option<gix::ObjectId>,
+    inserts: &[(String, gix::ObjectId)],
+    message: &str,
+) -> Result<Option<gix::ObjectId>> {
+    use gix::refs::{
+        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+        Target,
+    };
+    let Some(new_tip) = build_commit(repo, parent, inserts, message)? else {
+        return Ok(None);
+    };
+    let expected = match expected_tip {
+        Some(t) => PreviousValue::MustExistAndMatch(Target::Object(t)),
+        None => PreviousValue::MustNotExist,
+    };
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: message.into(),
+            },
+            expected,
+            new: Target::Object(new_tip),
+        },
+        name: INDEX_REF.try_into().context("invalid index ref name")?,
+        deref: false,
+    })
+    .context("CAS edit of refs/dkod/index")?;
+    Ok(Some(new_tip))
+}
+
+/// Advisory lock file serializing local index writers (§5.3 layer 1).
+/// `O_CREAT|O_EXCL`; waits up to ~10 s in 100 ms steps; a lock older than
+/// 30 s is treated as stale and removed. Released on Drop.
+struct IndexLock {
+    path: std::path::PathBuf,
+}
+
+impl IndexLock {
+    fn acquire(repo: &gix::Repository) -> Result<Self> {
+        let dir = repo.path().join("dkod");
+        std::fs::create_dir_all(&dir).context("create .git/dkod")?;
+        let path = dir.join("index.lock");
+        for _ in 0..100 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+                        .is_some_and(|age| age > std::time::Duration::from_secs(30));
+                    if stale {
+                        let _ = std::fs::remove_file(&path); // stale takeover
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(e).context("create index lock"),
+            }
+        }
+        Err(anyhow!(
+            "timed out waiting for index lock at {}",
+            path.display()
+        ))
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Apply one batch as one index commit: lock → write blobs → CAS loop
+/// (5 bounded attempts with jitter, §5.3). Returns the new tip, or `Ok(None)`
+/// when the batch was already fully present (idempotent no-op). Errors only
+/// after retry exhaustion — callers on the capture path spill to the outbox
+/// (`store::spill_to_outbox`) instead of failing the session.
+pub fn apply_batch(repo_path: &Path, batch: &IndexBatch) -> Result<Option<gix::ObjectId>> {
+    let mut repo = gix::open(repo_path).context("open repo")?;
+    crate::store::ensure_committer(&mut repo)?;
+    let _lock = IndexLock::acquire(&repo)?;
+    let mut inserts = Vec::with_capacity(batch.inserts.len());
+    for (path, bytes) in &batch.inserts {
+        let oid = repo
+            .write_blob(bytes.as_slice())
+            .context("write index blob")?
+            .detach();
+        inserts.push((path.clone(), oid));
+    }
+    let mut last_err = None;
+    for attempt in 0..5 {
+        let tip = index_tip(&repo);
+        match commit_inserts(&repo, tip, tip, &inserts, &batch.message) {
+            Ok(res) => return Ok(res),
+            Err(e) => {
+                last_err = Some(e);
+                // jitter: 10–50 ms scaled by attempt
+                let ms = 10 + (attempt as u64 * 10) + (std::process::id() as u64 % 10);
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("index CAS retries exhausted")))
 }
 
 #[cfg(test)]
@@ -390,5 +616,147 @@ mod tree_tests {
         );
         let ids = list_tree_dir(&repo, root, "sessions/2025-01-01").unwrap();
         assert_eq!(ids, vec!["a".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn repo() -> (TempDir, gix::Repository) {
+        let tmp = TempDir::new().unwrap();
+        let mut r = gix::init(tmp.path()).unwrap();
+        crate::store::ensure_committer(&mut r).unwrap();
+        (tmp, r)
+    }
+
+    fn batch(msg: &str, paths: &[(&str, &[u8])]) -> IndexBatch {
+        let mut b = IndexBatch::new(msg);
+        for (p, bytes) in paths {
+            b.insert(p.to_string(), bytes.to_vec());
+        }
+        b
+    }
+
+    #[test]
+    fn first_apply_creates_root_with_version_and_epoch() {
+        let (tmp, repo) = repo();
+        let tip = apply_batch(
+            tmp.path(),
+            &batch("dkod: test", &[("commits/aa/bb", b"x\n")]),
+        )
+        .unwrap()
+        .expect("a commit must be written");
+        assert_eq!(index_tip(&repo), Some(tip));
+        let root = commit_tree(&repo, tip).unwrap();
+        assert_eq!(
+            read_tree_blob(&repo, root, "version").unwrap(),
+            b"1\n".to_vec()
+        );
+        assert_eq!(
+            read_tree_blob(&repo, root, "epoch").unwrap(),
+            b"0\n".to_vec()
+        );
+        assert_eq!(
+            read_tree_blob(&repo, root, "commits/aa/bb").unwrap(),
+            b"x\n".to_vec()
+        );
+        // root commit has no parent
+        let commit = repo.find_object(tip).unwrap().try_into_commit().unwrap();
+        assert_eq!(commit.parent_ids().count(), 0);
+    }
+
+    #[test]
+    fn second_apply_chains_onto_first() {
+        let (tmp, repo) = repo();
+        let t1 = apply_batch(tmp.path(), &batch("m1", &[("a", b"1")]))
+            .unwrap()
+            .unwrap();
+        let t2 = apply_batch(tmp.path(), &batch("m2", &[("b", b"2")]))
+            .unwrap()
+            .unwrap();
+        let commit = repo.find_object(t2).unwrap().try_into_commit().unwrap();
+        let parents: Vec<_> = commit.parent_ids().map(|p| p.detach()).collect();
+        assert_eq!(parents, vec![t1]);
+        let root = commit_tree(&repo, t2).unwrap();
+        assert!(
+            read_tree_blob(&repo, root, "a").is_some(),
+            "older path must persist"
+        );
+        assert!(read_tree_blob(&repo, root, "b").is_some());
+    }
+
+    #[test]
+    fn reapplying_identical_batch_is_a_noop() {
+        let (tmp, _repo) = repo();
+        let b = batch("m", &[("a", b"1")]);
+        let t1 = apply_batch(tmp.path(), &b).unwrap().unwrap();
+        assert_eq!(
+            apply_batch(tmp.path(), &b).unwrap(),
+            None,
+            "no empty commit on no-op"
+        );
+        let repo2 = gix::open(tmp.path()).unwrap();
+        assert_eq!(index_tip(&repo2), Some(t1), "tip unchanged");
+    }
+
+    #[test]
+    fn build_commit_without_ref_edit_leaves_index_ref_alone() {
+        let (tmp, repo) = repo();
+        let t1 = apply_batch(tmp.path(), &batch("m", &[("a", b"1")]))
+            .unwrap()
+            .unwrap();
+        let blob = repo.write_blob(b"side").unwrap().detach();
+        let side = build_commit(&repo, Some(t1), &[("b".to_string(), blob)], "side").unwrap();
+        assert!(side.is_some());
+        assert_eq!(index_tip(&repo), Some(t1), "ref must not move");
+    }
+
+    #[test]
+    fn commit_inserts_cas_rejects_stale_expected() {
+        let (tmp, repo) = repo();
+        let t1 = apply_batch(tmp.path(), &batch("m1", &[("a", b"1")]))
+            .unwrap()
+            .unwrap();
+        let t2 = apply_batch(tmp.path(), &batch("m2", &[("b", b"2")]))
+            .unwrap()
+            .unwrap();
+        assert_ne!(t1, t2);
+        let blob = repo.write_blob(b"3").unwrap().detach();
+        // expected tip is stale (t1) while the ref is at t2 → must error
+        let err = commit_inserts(&repo, Some(t2), Some(t1), &[("c".to_string(), blob)], "m3");
+        assert!(err.is_err(), "stale CAS must be rejected");
+    }
+
+    #[test]
+    fn concurrent_apply_batch_keeps_every_insert() {
+        let (tmp, _repo) = repo();
+        let path = tmp.path().to_path_buf();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let b = {
+                        let mut b = IndexBatch::new(format!("t{i}"));
+                        b.insert(format!("commits/aa/{i:038}"), vec![b'0' + i as u8]);
+                        b
+                    };
+                    apply_batch(&p, &b).unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let repo = gix::open(&path).unwrap();
+        let tip = index_tip(&repo).unwrap();
+        let root = commit_tree(&repo, tip).unwrap();
+        for i in 0..8 {
+            assert!(
+                read_tree_blob(&repo, root, &format!("commits/aa/{i:038}")).is_some(),
+                "insert {i} lost under contention"
+            );
+        }
     }
 }
