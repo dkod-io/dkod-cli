@@ -23,6 +23,53 @@ impl Session {
     }
 }
 
+/// Marker spliced into truncated tool outputs by the capture-time size budget
+/// (storage-v2 design §7). `SessionMeta::derive` detects it; the budget
+/// module (Phase 2) writes it. Single source of truth for both sides.
+pub const TRUNCATION_MARKER_PREFIX: &str = "[dkod: truncated ";
+
+/// Small derived header written alongside the full session body in the
+/// rollup index (`sessions/<date>/<id>/meta.json`, design §4.3). NOT part of
+/// the `Session` schema — derived on write, so `Session` (and its 39 literal
+/// construction sites) never changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub id: String,
+    pub agent: Agent,
+    pub created_at: i64,
+    pub duration_ms: u64,
+    pub prompt_summary: String,
+    pub commits: Vec<String>,
+    pub files_touched: Vec<String>,
+    #[serde(default)]
+    pub redaction_count: u64,
+    /// Serialized (uncompressed) byte length of `body.json`.
+    pub body_bytes: u64,
+    /// True when any tool output carries the truncation marker.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl SessionMeta {
+    pub fn derive(s: &Session, body_bytes: u64) -> Self {
+        let truncated = s.messages.iter().any(|m| {
+            matches!(m, Message::Tool { output, .. } if output.contains(TRUNCATION_MARKER_PREFIX))
+        });
+        Self {
+            id: s.id.clone(),
+            agent: s.agent.clone(),
+            created_at: s.created_at,
+            duration_ms: s.duration_ms,
+            prompt_summary: s.prompt_summary.clone(),
+            commits: s.commits.clone(),
+            files_touched: s.files_touched.clone(),
+            redaction_count: s.redaction_count,
+            body_bytes,
+            truncated,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Agent {
@@ -182,5 +229,75 @@ mod tests {
         // UUID v7 is time-ordered as a string when sorted lexicographically
         // for ids generated at least 1 ms apart.
         assert!(a < b);
+    }
+
+    #[test]
+    fn session_meta_derives_all_header_fields() {
+        let s = Session {
+            id: "0192f8e2-7b3a-7000-8a3e-000000000001".into(),
+            agent: Agent::ClaudeCode,
+            created_at: 1735689600,
+            duration_ms: 12_345,
+            prompt_summary: "fix the auth bug".into(),
+            messages: vec![Message::user("fix the auth bug")],
+            commits: vec!["deadbeef".into()],
+            files_touched: vec!["src/auth.rs".into()],
+            redaction_count: 3,
+        };
+        let m = SessionMeta::derive(&s, 215_040);
+        assert_eq!(m.id, s.id);
+        assert_eq!(m.agent, s.agent);
+        assert_eq!(m.created_at, 1735689600);
+        assert_eq!(m.duration_ms, 12_345);
+        assert_eq!(m.prompt_summary, "fix the auth bug");
+        assert_eq!(m.commits, vec!["deadbeef".to_string()]);
+        assert_eq!(m.files_touched, vec!["src/auth.rs".to_string()]);
+        assert_eq!(m.redaction_count, 3);
+        assert_eq!(m.body_bytes, 215_040);
+        assert!(!m.truncated);
+    }
+
+    #[test]
+    fn session_meta_truncated_is_derived_from_the_marker() {
+        let mut s = Session {
+            id: "x".into(),
+            agent: Agent::Codex,
+            created_at: 0,
+            duration_ms: 0,
+            prompt_summary: "ok".into(),
+            messages: vec![Message::tool(
+                "bash",
+                serde_json::json!({}),
+                format!(
+                    "head…{}412 KiB of tool output]…tail",
+                    TRUNCATION_MARKER_PREFIX
+                ),
+            )],
+            commits: vec![],
+            files_touched: vec![],
+            redaction_count: 0,
+        };
+        assert!(SessionMeta::derive(&s, 1).truncated);
+        s.messages = vec![Message::user("no marker here")];
+        assert!(!SessionMeta::derive(&s, 1).truncated);
+    }
+
+    #[test]
+    fn session_meta_round_trips_through_json() {
+        let m = SessionMeta {
+            id: "a".into(),
+            agent: Agent::Codex,
+            created_at: 1,
+            duration_ms: 2,
+            prompt_summary: "p".into(),
+            commits: vec![],
+            files_touched: vec![],
+            redaction_count: 0,
+            body_bytes: 9,
+            truncated: true,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
     }
 }
