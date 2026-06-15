@@ -5,6 +5,8 @@
 //! write path. `store.rs` composes it with the legacy-ref dual-write and the
 //! permanent legacy read fallback.
 
+use anyhow::{anyhow, Context, Result};
+
 /// The single v2 ref (§4.1). Points at a commit; parent = previous tip.
 pub const INDEX_REF: &str = "refs/dkod/index";
 /// Contents of the root `version` blob.
@@ -84,6 +86,175 @@ pub fn patchid_pointer_path(pid: &str) -> String {
     format!("patchid/{}/{}", &pid[..2], &pid[2..])
 }
 
+/// Decode a tree object into owned entries. Empty Vec for `None`.
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+fn tree_entries(
+    repo: &gix::Repository,
+    tree: Option<gix::ObjectId>,
+) -> Result<Vec<gix::objs::tree::Entry>> {
+    let Some(oid) = tree else {
+        return Ok(Vec::new());
+    };
+    let obj = repo.find_object(oid).context("find tree object")?;
+    let tree = obj
+        .try_into_tree()
+        .map_err(|e| anyhow!("not a tree: {e}"))?;
+    let decoded = tree.decode().context("decode tree")?;
+    // gix 0.66 has no `From<&EntryRef>` for `Entry` — build owned entries
+    // manually (executor note in the plan for this gix API drift).
+    Ok(decoded
+        .entries
+        .iter()
+        .map(|e| gix::objs::tree::Entry {
+            mode: e.mode,
+            filename: e.filename.to_owned(),
+            oid: e.oid.to_owned(),
+        })
+        .collect())
+}
+
+/// Write a tree from entries (sorted into git's canonical tree order via
+/// `Entry: Ord`, which honors the directory-sorts-as-`name/` rule).
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+fn write_tree(
+    repo: &gix::Repository,
+    mut entries: Vec<gix::objs::tree::Entry>,
+) -> Result<gix::ObjectId> {
+    entries.sort();
+    Ok(repo
+        .write_object(&gix::objs::Tree { entries })
+        .context("write tree")?
+        .detach())
+}
+
+/// Read-modify-write a single `path` (slash-separated, all intermediate
+/// components trees) to point at `blob`, returning the new ROOT tree oid.
+/// `root = None` starts from an empty tree. A non-tree in an intermediate
+/// position is an error (corrupt index — never silently overwritten).
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+pub(crate) fn upsert_path(
+    repo: &gix::Repository,
+    root: Option<gix::ObjectId>,
+    path: &str,
+    blob: gix::ObjectId,
+) -> Result<gix::ObjectId> {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return Err(anyhow!("empty index path"));
+    }
+    upsert_segments(repo, root, &segments, blob)
+}
+
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+fn upsert_segments(
+    repo: &gix::Repository,
+    tree: Option<gix::ObjectId>,
+    segments: &[&str],
+    blob: gix::ObjectId,
+) -> Result<gix::ObjectId> {
+    use gix::objs::tree::{Entry, EntryKind};
+    let mut entries = tree_entries(repo, tree)?;
+    let name = segments[0];
+    let existing = entries.iter().position(|e| e.filename == name);
+    if segments.len() == 1 {
+        let entry = Entry {
+            mode: EntryKind::Blob.into(),
+            filename: name.into(),
+            oid: blob,
+        };
+        match existing {
+            Some(i) => entries[i] = entry,
+            None => entries.push(entry),
+        }
+    } else {
+        let child = match existing {
+            Some(i) => {
+                if !entries[i].mode.is_tree() {
+                    return Err(anyhow!(
+                        "index path conflict at {name:?}: blob where tree expected"
+                    ));
+                }
+                Some(entries[i].oid)
+            }
+            None => None,
+        };
+        let new_child = upsert_segments(repo, child, &segments[1..], blob)?;
+        let entry = Entry {
+            mode: EntryKind::Tree.into(),
+            filename: name.into(),
+            oid: new_child,
+        };
+        match existing {
+            Some(i) => entries[i] = entry,
+            None => entries.push(entry),
+        }
+    }
+    write_tree(repo, entries)
+}
+
+/// Resolve `path` under the ROOT TREE `root` to its blob oid. `None` when any
+/// component is absent or the leaf is not a blob.
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+pub(crate) fn blob_oid_at(
+    repo: &gix::Repository,
+    root: gix::ObjectId,
+    path: &str,
+) -> Option<gix::ObjectId> {
+    let mut current = root;
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    for (i, seg) in segments.iter().enumerate() {
+        let entries = tree_entries(repo, Some(current)).ok()?;
+        let entry = entries.iter().find(|e| e.filename == *seg)?;
+        if i == segments.len() - 1 {
+            return entry.mode.is_blob().then_some(entry.oid);
+        }
+        if !entry.mode.is_tree() {
+            return None;
+        }
+        current = entry.oid;
+    }
+    None
+}
+
+/// Blob bytes at `path` under root tree `root`.
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+pub(crate) fn read_tree_blob(
+    repo: &gix::Repository,
+    root: gix::ObjectId,
+    path: &str,
+) -> Option<Vec<u8>> {
+    let oid = blob_oid_at(repo, root, path)?;
+    Some(repo.find_object(oid).ok()?.detach().data)
+}
+
+/// Names of the SUBTREE entries directly under `dir` ("" = root), sorted.
+/// Used to walk `sessions/<date>/<id>` (§6.1) and gc candidates (§8).
+#[allow(dead_code)] // wired up by the batch/commit path in the next task
+pub(crate) fn list_tree_dir(
+    repo: &gix::Repository,
+    root: gix::ObjectId,
+    dir: &str,
+) -> Result<Vec<String>> {
+    let mut current = root;
+    for seg in dir.split('/').filter(|s| !s.is_empty()) {
+        let entries = tree_entries(repo, Some(current))?;
+        match entries
+            .iter()
+            .find(|e| e.filename == seg && e.mode.is_tree())
+        {
+            Some(e) => current = e.oid,
+            None => return Ok(Vec::new()),
+        }
+    }
+    let mut names: Vec<String> = tree_entries(repo, Some(current))?
+        .into_iter()
+        .filter(|e| e.mode.is_tree())
+        .map(|e| e.filename.to_string())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::*;
@@ -151,5 +322,73 @@ mod path_tests {
             patchid_pointer_path(sha),
             format!("patchid/de/{}", &sha[2..])
         );
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn repo() -> (TempDir, gix::Repository) {
+        let tmp = TempDir::new().unwrap();
+        let mut r = gix::init(tmp.path()).unwrap();
+        crate::store::ensure_committer(&mut r).unwrap();
+        (tmp, r)
+    }
+
+    #[test]
+    fn upsert_creates_nested_path_and_read_blob_round_trips() {
+        let (_tmp, repo) = repo();
+        let blob = repo.write_blob(b"hello").unwrap().detach();
+        let root = upsert_path(&repo, None, "sessions/2025-01-01/abc/body.json", blob).unwrap();
+        assert_eq!(
+            read_tree_blob(&repo, root, "sessions/2025-01-01/abc/body.json").unwrap(),
+            b"hello".to_vec()
+        );
+        assert!(read_tree_blob(&repo, root, "sessions/2025-01-01/abc/meta.json").is_none());
+        assert!(read_tree_blob(&repo, root, "nope/nope").is_none());
+    }
+
+    #[test]
+    fn upsert_preserves_siblings_and_overwrites_same_path() {
+        let (_tmp, repo) = repo();
+        let a = repo.write_blob(b"a").unwrap().detach();
+        let b = repo.write_blob(b"b").unwrap().detach();
+        let root = upsert_path(&repo, None, "commits/de/adbeef", a).unwrap();
+        let root = upsert_path(&repo, Some(root), "commits/de/other", b).unwrap();
+        let root = upsert_path(&repo, Some(root), "commits/de/adbeef", b).unwrap();
+        assert_eq!(
+            read_tree_blob(&repo, root, "commits/de/adbeef").unwrap(),
+            b"b".to_vec()
+        );
+        assert_eq!(
+            read_tree_blob(&repo, root, "commits/de/other").unwrap(),
+            b"b".to_vec()
+        );
+    }
+
+    #[test]
+    fn blob_oid_at_returns_oid_for_existing_path() {
+        let (_tmp, repo) = repo();
+        let blob = repo.write_blob(b"x").unwrap().detach();
+        let root = upsert_path(&repo, None, "version", blob).unwrap();
+        assert_eq!(blob_oid_at(&repo, root, "version"), Some(blob));
+        assert_eq!(blob_oid_at(&repo, root, "epoch"), None);
+    }
+
+    #[test]
+    fn list_tree_dir_names_subdirectories() {
+        let (_tmp, repo) = repo();
+        let blob = repo.write_blob(b"x").unwrap().detach();
+        let root = upsert_path(&repo, None, "sessions/2025-01-01/a/meta.json", blob).unwrap();
+        let root = upsert_path(&repo, Some(root), "sessions/2025-01-02/b/meta.json", blob).unwrap();
+        let dates = list_tree_dir(&repo, root, "sessions").unwrap();
+        assert_eq!(
+            dates,
+            vec!["2025-01-01".to_string(), "2025-01-02".to_string()]
+        );
+        let ids = list_tree_dir(&repo, root, "sessions/2025-01-01").unwrap();
+        assert_eq!(ids, vec!["a".to_string()]);
     }
 }
