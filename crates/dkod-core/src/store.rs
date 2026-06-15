@@ -1,3 +1,5 @@
+use crate::index;
+use crate::SessionMeta;
 use crate::{refs, Session};
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -41,9 +43,99 @@ pub(crate) fn ensure_committer(repo: &mut gix::Repository) -> Result<()> {
     Ok(())
 }
 
-/// Serialize `session` as JSON, write it as a Git blob, and create the
-/// `refs/dkod/sessions/<id>` reference pointing directly at that blob.
-pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
+/// (meta_path, meta_bytes) + (body_path, body_bytes) inserts for `session`,
+/// pushed onto `batch`. Path date: v7 timestamp, else created_at (§10).
+fn push_session_inserts(batch: &mut index::IndexBatch, session: &Session) -> Result<()> {
+    let body = serde_json::to_vec(session).context("serialize session body")?;
+    let meta = serde_json::to_vec(&SessionMeta::derive(session, body.len() as u64))
+        .context("serialize session meta")?;
+    let dir = index::session_dir_for(&session.id, session.created_at);
+    batch.insert(format!("{dir}/meta.json"), meta);
+    batch.insert(format!("{dir}/body.json"), body);
+    Ok(())
+}
+
+/// Pointer blob contents: `<session-id>\n` (§4.4).
+fn pointer_blob(session_id: &str) -> Vec<u8> {
+    format!("{session_id}\n").into_bytes()
+}
+
+/// Spill a session that could not reach the index (CAS exhaustion) to
+/// `.git/dkod/outbox/<id>.json` (§5.3). pub(crate) so tests can call it.
+pub(crate) fn spill_to_outbox(repo_path: &Path, session: &Session) -> Result<()> {
+    let repo = gix::open(repo_path).context("open repo")?;
+    let dir = repo.path().join("dkod/outbox");
+    std::fs::create_dir_all(&dir).context("create outbox dir")?;
+    let bytes = serde_json::to_vec(session).context("serialize outbox session")?;
+    std::fs::write(dir.join(format!("{}.json", session.id)), bytes).context("write outbox file")?;
+    Ok(())
+}
+
+/// Fold every parseable `.git/dkod/outbox/*.json` into `batch` (meta + body +
+/// commit pointers from `session.commits`; patch-ids are unknown for spilled
+/// sessions and are skipped). Returns the file paths to delete after a
+/// successful apply. Unparseable files are left in place and skipped.
+fn fold_outbox(repo_path: &Path, batch: &mut index::IndexBatch) -> Vec<std::path::PathBuf> {
+    let Ok(repo) = gix::open(repo_path) else {
+        return Vec::new();
+    };
+    let dir = repo.path().join("dkod/outbox");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut consumed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(session) = serde_json::from_slice::<Session>(&bytes) else {
+            continue;
+        };
+        if push_session_inserts(batch, &session).is_err() {
+            continue;
+        }
+        for sha in &session.commits {
+            if sha.len() >= 3 {
+                batch.insert(index::commit_pointer_path(sha), pointer_blob(&session.id));
+            }
+        }
+        consumed.push(path);
+    }
+    consumed
+}
+
+/// Apply `batch` to the index; on retry exhaustion spill `session` to the
+/// outbox and WARN instead of failing — a capture is never lost to
+/// contention (§5.3). Deletes `consumed_outbox` files only on success.
+fn apply_or_spill(
+    repo_path: &Path,
+    batch: &index::IndexBatch,
+    session: &Session,
+    consumed_outbox: &[std::path::PathBuf],
+) {
+    match index::apply_batch(repo_path, batch) {
+        Ok(_) => {
+            for p in consumed_outbox {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Err(e) => {
+            eprintln!("dkod: index write failed ({e:#}); session spilled to outbox");
+            let _ = spill_to_outbox(repo_path, session);
+        }
+    }
+}
+
+/// Legacy write: serialize `session` as JSON, write it as a Git blob, and
+/// create the `refs/dkod/sessions/<id>` reference pointing directly at that
+/// blob. Factored out of `write_session` so both the public single-shot
+/// function and `write_session_full` share one legacy code path. The session
+/// write is the only fatal step in the dual-write flow.
+fn write_session_legacy(repo_path: &Path, session: &Session) -> Result<()> {
     use gix::refs::{
         transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
         Target,
@@ -74,6 +166,30 @@ pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
     Ok(())
 }
 
+/// Persist `session` to the rollup index (meta + body) and, when dual-write is
+/// on, to the legacy `refs/dkod/sessions/<id>` blob ref. Spilled outbox
+/// sessions are folded into the same index commit. The legacy session write
+/// is the only fatal step; an index-write failure spills to the outbox and
+/// warns rather than failing (§5.3).
+pub fn write_session(repo_path: &Path, session: &Session) -> Result<()> {
+    let storage = crate::config::load_storage_config(repo_path);
+
+    let mut batch = index::IndexBatch::new(format!(
+        "dkod: add session {} ({}, 0 commit(s))",
+        session.id,
+        crate::agent_label(&session.agent)
+    ));
+    // Serialize failure stays fatal — same contract as today.
+    push_session_inserts(&mut batch, session)?;
+    let consumed = fold_outbox(repo_path, &mut batch);
+    apply_or_spill(repo_path, &batch, session, &consumed);
+
+    if storage.write_legacy_refs {
+        write_session_legacy(repo_path, session)?;
+    }
+    Ok(())
+}
+
 /// Populate `session.commits` from HEAD-watching (commits made since
 /// `head_at_start`) and persist everything: write the session blob (which now
 /// carries the commit list) and a `refs/dkod/commits/<sha>` link per commit,
@@ -97,25 +213,82 @@ pub fn write_session_with_commit_links(
     // Commit discovery is best-effort: a bad/unreadable start HEAD must never
     // block persisting the session.
     let commits = new_commits_since(repo_path, head_at_start).unwrap_or_default();
-    session.commits = commits.clone();
-    // The session write is the only fatal step — if it fails, the session is
-    // not persisted and the caller must treat the flush as failed.
-    write_session(repo_path, session)?;
-    // Linking is best-effort and per-commit: a single failure neither aborts the
-    // remaining links nor fails the call. Returns the shas successfully linked.
-    let mut linked = Vec::new();
-    for sha in &commits {
-        if link_session_to_commit(repo_path, &session.id, sha).is_ok() {
-            linked.push(sha.clone());
-        }
-    }
-    Ok(linked)
+    write_session_full(repo_path, session, &commits, &[])
 }
 
-/// Resolve `refs/dkod/sessions/<id>`, read the blob it points at, and
-/// deserialize it back into a `Session`.
+/// The batched finalize entry point (§5.2/§16): ONE index commit containing
+/// the session, all its commit pointers, and all its patch-id pointers.
+/// `commits` is the discovered commit list (caller runs `new_commits_since`);
+/// `patch_ids` is `(commit_sha, patch_id)` pairs (best-effort, may be empty).
+/// Sets `session.commits = commits` BEFORE serializing so body, meta, and
+/// pointers agree. Returns the linked shas. Legacy refs (session + commit
+/// links + patchid links) are also written iff dual-write is on; legacy link
+/// failures are skipped per-entry (today's best-effort policy), and only the
+/// session write itself is fatal.
+pub fn write_session_full(
+    repo_path: &Path,
+    session: &mut Session,
+    commits: &[String],
+    patch_ids: &[(String, String)],
+) -> Result<Vec<String>> {
+    session.commits = commits.to_vec();
+    let storage = crate::config::load_storage_config(repo_path);
+
+    // Index half: session + commit pointers + patch-id pointers in one batch.
+    let mut batch = index::IndexBatch::new(format!(
+        "dkod: add session {} ({}, {} commit(s))",
+        session.id,
+        crate::agent_label(&session.agent),
+        commits.len()
+    ));
+    push_session_inserts(&mut batch, session)?; // serialize failure is fatal
+    for sha in commits {
+        if sha.len() >= 3 {
+            batch.insert(index::commit_pointer_path(sha), pointer_blob(&session.id));
+        }
+    }
+    for (sha, pid) in patch_ids {
+        if pid.len() >= 3 && commits.contains(sha) {
+            batch.insert(index::patchid_pointer_path(pid), pointer_blob(&session.id));
+        }
+    }
+    let consumed = fold_outbox(repo_path, &mut batch);
+    apply_or_spill(repo_path, &batch, session, &consumed);
+
+    // Legacy half: session blob + ref (fatal), then best-effort link refs.
+    if storage.write_legacy_refs {
+        write_session_legacy(repo_path, session)?;
+        for sha in commits {
+            let _ = link_commit_legacy(repo_path, &session.id, sha);
+        }
+        for (sha, pid) in patch_ids {
+            if commits.contains(sha) {
+                let _ = link_patchid_legacy(repo_path, &session.id, pid);
+            }
+        }
+    }
+
+    Ok(commits.to_vec())
+}
+
+/// Read a session by id: the rollup index `body.json` first (§6.2), then the
+/// legacy `refs/dkod/sessions/<id>` blob. A parse failure on a located body is
+/// a real error, not a silent fallthrough.
 pub fn read_session(repo_path: &Path, id: &str) -> Result<Session> {
     let repo = gix::open(repo_path).context("open repo")?;
+
+    // Index-first: locate body.json at the current index tip.
+    if let Some(tip) = index::index_tip(&repo) {
+        if let Ok(root) = index::commit_tree(&repo, tip) {
+            if let Some(bytes) =
+                index::body_path(id).and_then(|p| index::read_tree_blob(&repo, root, &p))
+            {
+                return serde_json::from_slice(&bytes).context("deserialize session (index)");
+            }
+        }
+    }
+
+    // Legacy fallback: the original blob-ref read path, unchanged.
     let r = repo
         .find_reference(&refs::session_ref(id))
         .context("find session ref")?;
@@ -155,10 +328,11 @@ fn write_link_ref(
     Ok(())
 }
 
-/// Write `refs/dkod/commits/<commit_sha>` pointing at the same blob the session ref points at.
-/// Idempotent — overwrites any existing link ref for the same commit (UUID v7 makes session
-/// id collisions implausible; commit shas are content-addressed, so overwrite-on-retry is safe).
-pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &str) -> Result<()> {
+/// Legacy commit link: write `refs/dkod/commits/<commit_sha>` pointing at the
+/// same blob the session ref points at. Errors when the legacy session ref is
+/// absent (preserving today's contract). Factored out so the public function
+/// and `write_session_full` share one legacy code path.
+fn link_commit_legacy(repo_path: &Path, session_id: &str, commit_sha: &str) -> Result<()> {
     let mut repo = gix::open(repo_path).context("open repo")?;
     ensure_committer(&mut repo)?;
     let session_ref = repo
@@ -174,12 +348,9 @@ pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &s
     )
 }
 
-/// Write `refs/dkod/patchid/<patch_id>` pointing at the same blob the session
-/// ref points at — the patch-id provenance fallback for `dkod blame`. Mirrors
-/// `link_session_to_commit`. Overwrite-on-collision (`PreviousValue::Any`):
-/// two sessions with the same diff → last writer wins, matching the commit-ref
-/// policy.
-pub fn link_session_to_patchid(repo_path: &Path, session_id: &str, patch_id: &str) -> Result<()> {
+/// Legacy patch-id link: mirror of `link_commit_legacy` for
+/// `refs/dkod/patchid/<patch_id>`.
+fn link_patchid_legacy(repo_path: &Path, session_id: &str, patch_id: &str) -> Result<()> {
     let mut repo = gix::open(repo_path).context("open repo")?;
     ensure_committer(&mut repo)?;
     let session_ref = repo
@@ -195,31 +366,151 @@ pub fn link_session_to_patchid(repo_path: &Path, session_id: &str, patch_id: &st
     )
 }
 
-/// Re-point `refs/dkod/commits/<new_sha>` at whatever session blob
-/// `refs/dkod/commits/<old_sha>` currently points at. Returns `Ok(true)` if the
-/// old ref existed and the new ref was written, `Ok(false)` if the old ref is
-/// absent (nothing to re-link). The old ref is left in place (additive) so an
-/// undone rewrite (`git reset --hard ORIG_HEAD`) still resolves.
+/// Link a commit sha to a session: an index pointer `commits/<fanout>` (§4.4),
+/// and — when dual-write is on — the legacy `refs/dkod/commits/<sha>` ref. The
+/// index write is best-effort (warn-only, matching today's link policy); the
+/// legacy write still errors when the session ref is absent, preserving the
+/// existing contract and tests. When dual-write is off, an existence check
+/// (`read_session`) keeps "link a never-written session" an error.
+pub fn link_session_to_commit(repo_path: &Path, session_id: &str, commit_sha: &str) -> Result<()> {
+    if commit_sha.len() >= 3 {
+        let mut batch = index::IndexBatch::new(format!(
+            "dkod: link session {session_id} to commit {commit_sha}"
+        ));
+        batch.insert(
+            index::commit_pointer_path(commit_sha),
+            pointer_blob(session_id),
+        );
+        if let Err(e) = index::apply_batch(repo_path, &batch) {
+            eprintln!("dkod: index commit-link failed ({e:#}); legacy ref still attempted");
+        }
+    }
+
+    let storage = crate::config::load_storage_config(repo_path);
+    if storage.write_legacy_refs {
+        link_commit_legacy(repo_path, session_id, commit_sha)
+    } else {
+        // Linking a never-written session must still error.
+        read_session(repo_path, session_id)?;
+        Ok(())
+    }
+}
+
+/// Link a patch-id to a session: an index pointer `patchid/<fanout>`, and —
+/// when dual-write is on — the legacy `refs/dkod/patchid/<pid>` ref. Same
+/// best-effort/existence-check policy as `link_session_to_commit`.
+pub fn link_session_to_patchid(repo_path: &Path, session_id: &str, patch_id: &str) -> Result<()> {
+    if patch_id.len() >= 3 {
+        let mut batch = index::IndexBatch::new(format!(
+            "dkod: link session {session_id} to patch-id {patch_id}"
+        ));
+        batch.insert(
+            index::patchid_pointer_path(patch_id),
+            pointer_blob(session_id),
+        );
+        if let Err(e) = index::apply_batch(repo_path, &batch) {
+            eprintln!("dkod: index patch-id-link failed ({e:#}); legacy ref still attempted");
+        }
+    }
+
+    let storage = crate::config::load_storage_config(repo_path);
+    if storage.write_legacy_refs {
+        link_patchid_legacy(repo_path, session_id, patch_id)
+    } else {
+        read_session(repo_path, session_id)?;
+        Ok(())
+    }
+}
+
+/// Re-point a commit link after a history rewrite. Delegates to
+/// `relink_commits`; returns `Ok(true)` if the pair resolved (old pointer/ref
+/// existed) and the new pointer was written, `Ok(false)` otherwise. The old
+/// pointer/ref is left in place (additive) so an undone rewrite
+/// (`git reset --hard ORIG_HEAD`) still resolves.
 pub fn relink_commit(repo_path: &Path, old_sha: &str, new_sha: &str) -> Result<bool> {
+    Ok(relink_commits(repo_path, &[(old_sha.to_string(), new_sha.to_string())])? == 1)
+}
+
+/// Batched post-rewrite relink (§5.2): resolve every `(old, new)` pair — index
+/// pointer at `commits/<old>` first, legacy `refs/dkod/commits/<old>` second —
+/// and write all new pointers as ONE index commit. Old paths/refs are kept
+/// (additive). Legacy new refs are written iff dual-write is on AND the pair
+/// resolved via a legacy ref or its legacy session ref still exists. Returns
+/// how many pairs resolved; pairs that resolve nowhere are skipped.
+pub fn relink_commits(repo_path: &Path, pairs: &[(String, String)]) -> Result<usize> {
     let mut repo = gix::open(repo_path).context("open repo")?;
     ensure_committer(&mut repo)?;
 
-    let old_ref = match repo
-        .try_find_reference(&refs::commit_ref(old_sha))
-        .context("look up old commit ref")?
-    {
-        Some(r) => r,
-        None => return Ok(false),
-    };
-    let blob_id = old_ref.id().detach();
+    // Resolve each pair to its session id, recording any legacy old-ref blob so
+    // the legacy new ref can be written (dual-write) without re-resolving.
+    let index_root = index::index_tip(&repo).and_then(|tip| index::commit_tree(&repo, tip).ok());
+    let mut resolved: Vec<(String, String, Option<gix::ObjectId>)> = Vec::new();
+    for (old, new) in pairs {
+        if old.len() < 3 || new.len() < 3 {
+            continue;
+        }
+        // Index pointer first.
+        let from_index = index_root.and_then(|root| {
+            index::read_tree_blob(&repo, root, &index::commit_pointer_path(old))
+                .map(|b| String::from_utf8_lossy(&b).trim_end().to_string())
+        });
+        if let Some(id) = from_index {
+            resolved.push((new.clone(), id, None));
+            continue;
+        }
+        // Legacy ref second.
+        if let Ok(Some(old_ref)) = repo.try_find_reference(&refs::commit_ref(old)) {
+            let blob_id = old_ref.id().detach();
+            let id = repo
+                .find_object(blob_id)
+                .ok()
+                .and_then(|o| serde_json::from_slice::<Session>(&o.detach().data).ok())
+                .map(|s| s.id);
+            if let Some(id) = id {
+                resolved.push((new.clone(), id, Some(blob_id)));
+            }
+        }
+    }
 
-    write_link_ref(
-        &repo,
-        refs::commit_ref(new_sha),
-        blob_id,
-        format!("dkod: relink commit {old_sha} -> {new_sha}"),
-    )?;
-    Ok(true)
+    if resolved.is_empty() {
+        return Ok(0);
+    }
+
+    // Index half: all new pointers in one batch.
+    let mut batch = index::IndexBatch::new(format!(
+        "dkod: relink {} commit(s) after history rewrite",
+        resolved.len()
+    ));
+    for (new, id, _) in &resolved {
+        batch.insert(index::commit_pointer_path(new), pointer_blob(id));
+    }
+    index::apply_batch(repo_path, &batch).context("relink index batch")?;
+
+    // Legacy half (dual-write only): write the new `refs/dkod/commits/<new>`
+    // pointing at the session blob. The blob is resolved via the legacy session
+    // ref `refs/dkod/sessions/<id>` when present, else the recorded legacy
+    // old-ref blob; pairs with no legacy provenance are skipped (index-only).
+    let storage = crate::config::load_storage_config(repo_path);
+    if storage.write_legacy_refs {
+        for (new, id, legacy_blob) in &resolved {
+            let blob_id = repo
+                .try_find_reference(&refs::session_ref(id))
+                .ok()
+                .flatten()
+                .map(|r| r.id().detach())
+                .or(*legacy_blob);
+            if let Some(blob_id) = blob_id {
+                let _ = write_link_ref(
+                    &repo,
+                    refs::commit_ref(new),
+                    blob_id,
+                    format!("dkod: relink commit -> {new}"),
+                );
+            }
+        }
+    }
+
+    Ok(resolved.len())
 }
 
 /// Enumerate all sessions stored under `refs/dkod/sessions/*` in this repo.
@@ -746,5 +1037,197 @@ mod tests {
             .find_reference(&crate::refs::session_ref(&b.id))
             .unwrap();
         assert_eq!(pid_ref.id(), b_ref.id(), "last writer (sessionB) must win");
+    }
+
+    fn index_root(repo_path: &std::path::Path) -> (gix::Repository, gix::ObjectId) {
+        let repo = gix::open(repo_path).unwrap();
+        let tip = crate::index::index_tip(&repo).expect("index ref must exist");
+        let root = crate::index::commit_tree(&repo, tip).unwrap();
+        (repo, root)
+    }
+
+    #[test]
+    fn write_session_also_writes_index_meta_and_body() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+
+        let (repo, root) = index_root(tmp.path());
+        let body =
+            crate::index::read_tree_blob(&repo, root, &crate::index::body_path(&s.id).unwrap())
+                .expect("body.json present");
+        let back: Session = serde_json::from_slice(&body).unwrap();
+        assert_eq!(back, s, "body.json is the exact Session JSON");
+        let meta =
+            crate::index::read_tree_blob(&repo, root, &crate::index::meta_path(&s.id).unwrap())
+                .expect("meta.json present");
+        let meta: crate::SessionMeta = serde_json::from_slice(&meta).unwrap();
+        assert_eq!(meta.id, s.id);
+        assert_eq!(meta.body_bytes, body.len() as u64);
+        // legacy ref still written (dual-write default ON)
+        assert!(repo
+            .find_reference(&crate::refs::session_ref(&s.id))
+            .is_ok());
+    }
+
+    #[test]
+    fn write_session_with_legacy_disabled_writes_index_only() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".dkod")).unwrap();
+        std::fs::write(
+            tmp.path().join(".dkod/config.toml"),
+            "[storage]\nwrite_legacy_refs = false\n",
+        )
+        .unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        assert!(
+            repo.find_reference(&crate::refs::session_ref(&s.id))
+                .is_err(),
+            "no legacy ref when dual-write is off"
+        );
+        assert_eq!(
+            read_session(tmp.path(), &s.id).unwrap(),
+            s,
+            "index read path serves it"
+        );
+    }
+
+    #[test]
+    fn write_session_full_batches_session_links_and_patchids_into_one_commit() {
+        use gix::ObjectId;
+        let tmp = TempDir::new().unwrap();
+        let mut repo = gix::init(tmp.path()).unwrap();
+        super::ensure_committer(&mut repo).unwrap();
+        let sig = gix::actor::SignatureRef {
+            name: "t".into(),
+            email: "t@e.com".into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let tree: gix::ObjectId = repo.empty_tree().id().into();
+        let a = repo
+            .commit_as(sig, sig, "HEAD", "a", tree, Vec::<ObjectId>::new())
+            .unwrap()
+            .detach();
+
+        let mut s = fixture_session();
+        let commits = vec![a.to_string()];
+        let pid = "1111111111111111111111111111111111111111".to_string();
+        let linked = write_session_full(
+            tmp.path(),
+            &mut s,
+            &commits,
+            &[(a.to_string(), pid.clone())],
+        )
+        .unwrap();
+        assert_eq!(linked, vec![a.to_string()]);
+        assert_eq!(s.commits, vec![a.to_string()]);
+
+        let (repo, root) = index_root(tmp.path());
+        // pointer blobs contain "<session-id>\n"
+        let want = format!("{}\n", s.id).into_bytes();
+        assert_eq!(
+            crate::index::read_tree_blob(
+                &repo,
+                root,
+                &crate::index::commit_pointer_path(&a.to_string())
+            )
+            .unwrap(),
+            want
+        );
+        assert_eq!(
+            crate::index::read_tree_blob(&repo, root, &crate::index::patchid_pointer_path(&pid))
+                .unwrap(),
+            want
+        );
+        // exactly ONE index commit was written for the whole finalize (§5.1):
+        let tip = crate::index::index_tip(&repo).unwrap();
+        let c = repo.find_object(tip).unwrap().try_into_commit().unwrap();
+        assert_eq!(
+            c.parent_ids().count(),
+            0,
+            "session+links land in a single root commit"
+        );
+        // legacy link refs still written (dual-write ON)
+        assert!(repo
+            .find_reference(&crate::refs::commit_ref(&a.to_string()))
+            .is_ok());
+        assert!(repo.find_reference(&crate::refs::patchid_ref(&pid)).is_ok());
+    }
+
+    #[test]
+    fn outbox_sessions_fold_into_next_write() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        // simulate a spilled session (apply_batch exhaustion, §5.3)
+        let spilled = fixture_session();
+        spill_to_outbox(tmp.path(), &spilled).unwrap();
+        let outbox = tmp
+            .path()
+            .join(".git/dkod/outbox")
+            .join(format!("{}.json", spilled.id));
+        assert!(outbox.exists());
+
+        let next = {
+            let mut s = fixture_session();
+            s.id = Session::new_id();
+            s
+        };
+        write_session(tmp.path(), &next).unwrap();
+        assert_eq!(
+            read_session(tmp.path(), &spilled.id).unwrap(),
+            spilled,
+            "folded into the index"
+        );
+        assert!(!outbox.exists(), "outbox entry consumed");
+    }
+
+    #[test]
+    fn relink_commits_batches_pairs_into_one_index_commit() {
+        let tmp = TempDir::new().unwrap();
+        gix::init(tmp.path()).unwrap();
+        let s = fixture_session();
+        write_session(tmp.path(), &s).unwrap();
+        let old1 = "0000000000000000000000000000000000000001";
+        let old2 = "0000000000000000000000000000000000000002";
+        link_session_to_commit(tmp.path(), &s.id, old1).unwrap();
+        link_session_to_commit(tmp.path(), &s.id, old2).unwrap();
+        let repo = gix::open(tmp.path()).unwrap();
+        let tip_before = crate::index::index_tip(&repo).unwrap();
+
+        let new1 = "000000000000000000000000000000000000000a";
+        let new2 = "000000000000000000000000000000000000000b";
+        let n = relink_commits(
+            tmp.path(),
+            &[
+                (old1.to_string(), new1.to_string()),
+                (old2.to_string(), new2.to_string()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(n, 2);
+        let repo = gix::open(tmp.path()).unwrap();
+        let tip_after = crate::index::index_tip(&repo).unwrap();
+        let c = repo
+            .find_object(tip_after)
+            .unwrap()
+            .try_into_commit()
+            .unwrap();
+        let parents: Vec<_> = c.parent_ids().map(|p| p.detach()).collect();
+        assert_eq!(parents, vec![tip_before], "all pairs in ONE new commit");
+        // old paths kept, new paths added (undo-friendly, §5.2)
+        let root = crate::index::commit_tree(&repo, tip_after).unwrap();
+        for sha in [old1, old2, new1, new2] {
+            assert!(
+                crate::index::read_tree_blob(&repo, root, &crate::index::commit_pointer_path(sha))
+                    .is_some(),
+                "pointer for {sha} missing"
+            );
+        }
+        // legacy new refs written too (dual-write ON)
+        assert!(repo.find_reference(&crate::refs::commit_ref(new1)).is_ok());
     }
 }

@@ -213,7 +213,6 @@ pub(crate) fn blob_oid_at(
 }
 
 /// Blob bytes at `path` under root tree `root`.
-#[allow(dead_code)] // wired up by the batch/commit path in the next task
 pub(crate) fn read_tree_blob(
     repo: &gix::Repository,
     root: gix::ObjectId,
