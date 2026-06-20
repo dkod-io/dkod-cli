@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub redact: RedactConfig,
     pub drift: DriftConfig,
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +166,42 @@ impl Default for DriftConfig {
     }
 }
 
+/// Storage-format coordination, committed in `.dkod/config.toml` (§12 of the
+/// storage-v2 design). Old CLIs ignore unknown keys (serde default behavior).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// `Some("v2")` once `dkod reindex` (or a new init) has run; `None` means
+    /// a v1-era repo. Informational — readers always use the fallback chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// Dual-write toggle: when true, every index write also writes the legacy
+    /// `refs/dkod/{sessions,commits,patchid}/*` refs so old CLIs keep reading.
+    pub write_legacy_refs: bool,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            format: None,
+            write_legacy_refs: true,
+        }
+    }
+}
+
+/// Best-effort `[storage]` load for `dkod-core` writers (`store.rs` cannot
+/// take a `Config` parameter without breaking public signatures). Missing or
+/// unparseable `.dkod/config.toml` → defaults; never errors.
+pub fn load_storage_config(repo_path: &std::path::Path) -> StorageConfig {
+    let path = repo_path.join(".dkod/config.toml");
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return StorageConfig::default();
+    };
+    toml::from_str::<Config>(&body)
+        .map(|c| c.storage)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +306,35 @@ mod tests {
         assert_eq!(c.drift.large_change_files, 9);
         assert_eq!(c.drift.small_ask_keywords, vec!["typo", "nit"]);
         assert_eq!(c.drift.small_ask_max_chars, 140); // unspecified → default
+    }
+
+    #[test]
+    fn defaults_storage_to_dual_write_on_with_no_format() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.storage.write_legacy_refs);
+        assert_eq!(c.storage.format, None);
+    }
+
+    #[test]
+    fn storage_section_overrides_parse() {
+        let toml = r#"
+            [storage]
+            format = "v2"
+            write_legacy_refs = false
+        "#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.storage.format.as_deref(), Some("v2"));
+        assert!(!c.storage.write_legacy_refs);
+    }
+
+    #[test]
+    fn load_storage_config_defaults_when_file_missing_or_bad() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let s = load_storage_config(tmp.path());
+        assert!(s.write_legacy_refs); // missing file → default
+        std::fs::create_dir_all(tmp.path().join(".dkod")).unwrap();
+        std::fs::write(tmp.path().join(".dkod/config.toml"), "not [valid toml").unwrap();
+        let s = load_storage_config(tmp.path());
+        assert!(s.write_legacy_refs); // unparseable file → default, never an error
     }
 }

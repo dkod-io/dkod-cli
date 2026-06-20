@@ -43,6 +43,13 @@ enum Cmd {
     },
     /// List sessions in this repo
     Log,
+    /// Fold legacy per-session refs (refs/dkod/sessions|commits|patchid/*)
+    /// into the rollup index ref (refs/dkod/index). Idempotent.
+    Reindex {
+        /// Report what would be folded without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show a session by id
     Show {
         /// Session id to display
@@ -205,6 +212,7 @@ fn main() -> anyhow::Result<()> {
             }
         },
         Cmd::Log => cmd::log::run(&std::env::current_dir()?),
+        Cmd::Reindex { dry_run } => cmd::reindex::run(&std::env::current_dir()?, dry_run),
         Cmd::Show { id } => cmd::show::run(&std::env::current_dir()?, &id),
         Cmd::Blame { path } => cmd::blame::run(&std::env::current_dir()?, &path),
         Cmd::Drift {

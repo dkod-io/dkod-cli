@@ -59,34 +59,24 @@ pub fn run(cwd: &Path, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Decode the session blob a dkod ref points at into the blame annotation
-/// tuple `(agent_label, short_session_id, prompt_summary)`.
-fn session_from_ref_name(
-    repo: &gix::Repository,
-    ref_name: &str,
-) -> Option<(String, String, String)> {
-    let r = repo.find_reference(ref_name).ok()?;
-    let obj = repo.find_object(r.id()).ok()?.detach();
-    let session: dkod_core::Session = serde_json::from_slice(&obj.data).ok()?;
-    let short = session.id.get(..8).unwrap_or(&session.id).to_string();
-    Some((
-        dkod_core::agent_label(&session.agent).to_string(),
-        short,
-        session.prompt_summary,
-    ))
-}
-
-/// Resolve a blamed commit SHA to its session annotation. Primary: the
-/// `refs/dkod/commits/<sha>` link. Fallback: when that's absent (a rewrite the
-/// post-rewrite hook never observed), match the commit's `git patch-id` against
-/// `refs/dkod/patchid/<patch-id>`, which survives diff-preserving rewrites.
+/// Resolve a blamed commit SHA to its annotation tuple. Index pointer first,
+/// legacy ref second (handled inside dkod_core::store); patch-id fallback
+/// unchanged in spirit (§6.1). Metadata-only — never loads body.json, which
+/// keeps blame fast under lazy propagation (Phase 3).
 fn session_for_commit(cwd: &Path, sha: &str) -> Option<(String, String, String)> {
-    let repo = gix::open(cwd).ok()?;
-    if let Some(hit) = session_from_ref_name(&repo, &dkod_core::refs::commit_ref(sha)) {
-        return Some(hit);
+    let to_tuple = |m: dkod_core::SessionMeta| {
+        let short = m.id.get(..8).unwrap_or(&m.id).to_string();
+        (
+            dkod_core::agent_label(&m.agent).to_string(),
+            short,
+            m.prompt_summary,
+        )
+    };
+    if let Some(m) = dkod_core::store::lookup_commit_session(cwd, sha) {
+        return Some(to_tuple(m));
     }
     let pid = crate::cmd::patchid::compute_patch_id(cwd, sha)?;
-    session_from_ref_name(&repo, &dkod_core::refs::patchid_ref(&pid))
+    dkod_core::store::lookup_patchid_session(cwd, &pid).map(to_tuple)
 }
 
 /// Parse `git blame --porcelain` output into one BlameLine per source line.

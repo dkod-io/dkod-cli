@@ -6,6 +6,7 @@ pub mod import;
 pub mod init;
 pub mod log;
 pub mod patchid;
+pub mod reindex;
 pub mod relink;
 pub mod setup;
 pub mod show;
