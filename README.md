@@ -1,3 +1,5 @@
+> **Archived (2026-08-18).** dkod-cli is superseded by [dkod-signals](https://github.com/dkod-io/dkod-signals) — a device scanner that inventories AI-built apps and emits a metrics-only report. This repo is read-only; see `CLAUDE.md` for what remains useful here.
+
 # dkod — the git-native flight recorder for AI coding agents
 
 Transcripts are never stored outside your git host.
